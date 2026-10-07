@@ -136,3 +136,6 @@ build/
 /cc-session.md
 
 /build-asan/
+
+# Personal study notes (tracked on the study branch)
+!/hw/femu/bbssd/참고자료/**/*.md
