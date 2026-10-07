@@ -1,5 +1,8 @@
 # 5단계 — 무효화, RU 통계, victim queue
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 코드 동작과 정적 검토상의 확인 지점을 구분한다. 수치 예시는 설명용이다.
 
 이전: [4단계 — 쓰기와 RU 교체](04_FDP_write_and_RU_rotation.md) · 다음: [6단계 — GC와 격리](06_FDP_GC_and_isolation.md)
@@ -26,7 +29,7 @@ flowchart TD
 
 ## 2. 새 페이지를 valid로 만들 때 RU와 RUH도 갱신된다
 
-출처: [bbssd/ftl.c:1309–1324](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1309)
+출처: [ftl-fdp.c:409–424](../../ftl-fdp.c#L409)
 
 ```c
     line = get_line(ssd, ppa);
@@ -55,7 +58,7 @@ flowchart TD
 
 ## 3. 무효화의 출발점과 중복 호출 처리
 
-출처: [bbssd/ftl.c:1340–1351](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1340)
+출처: [ftl-fdp.c:453–464](../../ftl-fdp.c#L453)
 
 ```c
     pg = get_pg(ssd, ppa);
@@ -76,7 +79,7 @@ flowchart TD
 
 그 다음 line에서 같은 변화를 반영한다.
 
-출처: [bbssd/ftl.c:1353–1370](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1353)
+출처: [ftl-fdp.c:466–484](../../ftl-fdp.c#L466)
 
 ```c
     line = get_line(ssd, ppa);
@@ -103,7 +106,7 @@ flowchart TD
 
 ## 4. `was_full_ru`는 감소 전 RU vpc를 읽는다
 
-출처: [bbssd/ftl.c:1380–1389](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1380)
+출처: [ftl-fdp.c:495–504](../../ftl-fdp.c#L495)
 
 ```c
     /* check if RU was full and needs to move to victim */
@@ -136,11 +139,11 @@ flowchart TD
 
 여기서 utilization은 `vpc / (vpc + ipc)`다. 아직 빈 페이지가 있는 활성 RU라면 전체 RU 용량 대비 사용률이 아니라 **이미 쓴 페이지 중 유효한 비율**이다. 닫힌 RU에서는 `vpc+ipc=npages`이므로 전체 용량 대비 유효 비율과 같아진다.
 
-예를 들어 용량 8페이지인 활성 RU에서 3번 기록 후 1개가 무효라면 `vpc=2, ipc=1`이어서 utilization은 `2/3`이다. `2/8`이 아니다. RU 소진 시에는 `vpc/npages`를 사용한다(`ftl.c:1226`). 두 식이 쓰이는 시점을 구분한다.
+예를 들어 용량 8페이지인 활성 RU에서 3번 기록 후 1개가 무효라면 `vpc=2, ipc=1`이어서 utilization은 `2/3`이다. `2/8`이 아니다. RU 소진 시에는 `vpc/npages`를 사용한다([ftl-fdp.c:288](../../ftl-fdp.c#L288)). 두 식이 쓰이는 시점을 구분한다.
 
 ## 5. full에서 victim으로 이동하는 경로
 
-출처: [bbssd/ftl.c:1391–1397](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1391)
+출처: [ftl-fdp.c:507–513](../../ftl-fdp.c#L507)
 
 ```c
     switch (rm->mgmt_type) {
@@ -154,7 +157,7 @@ flowchart TD
 
 이미 victim heap에 있으면 `ru->pos`가 그 heap 내부 위치를 나타내며 우선순위 갱신을 요청한다. 아직 활성 RU인 경우는 일반적으로 `pos=0`이므로 여기서 heap에 들어가지 않는다.
 
-출처: [bbssd/ftl.c:1409–1424](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1409)
+출처: [ftl-fdp.c:525–540](../../ftl-fdp.c#L525)
 
 ```c
         if (was_full_ru) {
@@ -187,7 +190,7 @@ full RU의 첫 무효화이면 full 목록에서 제거하고 global victim heap
 
 ## 6. global heap과 RUH heap의 위치는 다르다
 
-출처: [bbssd/ftl.c:160–168](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:160)
+출처: [ftl-fdp.c:69–77](../../ftl-fdp.c#L69)
 
 ```c
 static inline size_t victim_ru_get_pos(void *a)
@@ -201,7 +204,7 @@ static inline void victim_ru_set_pos(void *a, size_t pos)
 }
 ```
 
-출처: [bbssd/ftl.c:178–185](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:178)
+출처: [ftl-fdp.c:88–95](../../ftl-fdp.c#L88)
 
 ```c
 static inline size_t victim_ru_get_pos_ruh(void *a)
@@ -218,7 +221,7 @@ global heap은 `pos`, per-RUH heap은 `ruh_pos`를 사용한다. 같은 RU가 �
 
 NOISY의 RUH별 우선순위 갱신은 다음과 같다.
 
-출처: [bbssd/ftl.c:1405–1407](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1405)
+출처: [ftl-fdp.c:521–523](../../ftl-fdp.c#L521)
 
 ```c
         if (rm->mgmt_type == GC_NOISY_RUH_CUSTOM && ru->ruh_pos &&
@@ -226,15 +229,17 @@ NOISY의 RUH별 우선순위 갱신은 다음과 같다.
             pqueue_change_priority(ru->ruh->ru_mgmt->victim_ru_pq, ru->vpc, ru);
 ```
 
-“PI RUH에는 관리 객체가 있다”는 사실과 “그 RU가 그 heap에 들어 있다”는 사실은 다르다. `ruh_pos`는 후자를 확인하려는 필드다. pop/remove 후 0으로 지우는 책임도 필요하다. 실제 `pqueue_pop()`은 제거된 객체의 위치 필드를 초기화하지 않는다(`lib/pqueue.c:172–183`); 6단계에서 선택 후 정리 코드를 확인한다.
+“PI RUH에는 관리 객체가 있다”는 사실과 “그 RU가 그 heap에 들어 있다”는 사실은 다르다. `ruh_pos`는 후자를 확인하려는 필드다. pop/remove 후 0으로 지우는 책임도 필요하다. 실제 `pqueue_pop()`은 제거된 객체의 위치 필드를 초기화하지 않는다([lib/pqueue.c:173–184](../../../lib/pqueue.c#L173)); 6단계에서 선택 후 정리 코드를 확인한다.
 
 ### 두 등록 경로의 비대칭
 
-NOISY에서 full→victim 경로는 양쪽 heap에 등록한다. 그러나 활성 상태에서 이미 무효 페이지가 생긴 RU가 소진되는 경로는 global heap에만 등록한다(`ftl.c:1233–1238`). 따라서 RUH별 heap이 그 RUH의 모든 victim을 완전하게 표현한다고 단정할 수 없다. NOISY 선택에 global fallback이 있는 이유와 별개로, 후보 집합을 연구할 때 확인할 부분이다.
+NOISY에서 full→victim 경로는 양쪽 heap에 등록한다. 그러나 활성 상태에서 이미 무효 페이지가 생긴 RU가 소진되는 경로는 global heap에만 등록한다(`ftl.c:1233–1238`, 최신 코드: [ftl-fdp.c:295–305](../../ftl-fdp.c#L295) — 동작 변경). 따라서 RUH별 heap이 그 RUH의 모든 victim을 완전하게 표현한다고 단정할 수 없다. NOISY 선택에 global fallback이 있는 이유와 별개로, 후보 집합을 연구할 때 확인할 부분이다.
+
+> ⚠ 최신 코드: 소진 경로 `fdp_retire_ru()`도 NOISY면 per-RUH heap에 넣으므로 이 비대칭은 없어졌다 ([ftl-fdp.c:302–305](../../ftl-fdp.c#L302)).
 
 ## 7. greedy 우선순위의 의미와 갱신 순서 문제
 
-출처: [bbssd/ftl.c:145–157](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:145)
+출처: [ftl-fdp.c:54–66](../../ftl-fdp.c#L54)
 
 ```c
 static inline int victim_ru_cmp_pri(pqueue_pri_t next, pqueue_pri_t curr)
@@ -252,11 +257,11 @@ static inline void victim_ru_set_pri(void *a, pqueue_pri_t pri)
     ((FemuReclaimUnit *)a)->vpc = pri;
 ```
 
-우선순위 값은 `vpc`다. 이 pqueue 구현은 부모 값이 자식보다 클 때 위로 올리는 구조이므로, heap이 정상일 때 작은 `vpc`가 앞에 온다(`lib/pqueue.c:74–88`). valid page가 적은 RU를 선택하면 그 RU에서 옮길 페이지 수가 적다는 해석이다.
+우선순위 값은 `vpc`다. 이 pqueue 구현은 부모 값이 자식보다 클 때 위로 올리는 구조이므로, heap이 정상일 때 작은 `vpc`가 앞에 온다([lib/pqueue.c:74–88](../../../lib/pqueue.c#L74)). valid page가 적은 RU를 선택하면 그 RU에서 옮길 페이지 수가 적다는 해석이다.
 
 다만 **원하는 우선순위와 실제 heap 유지가 같은 문제는 아니다.** 현재 무효화 함수는 먼저 `ru->vpc--`를 수행한 다음 `pqueue_change_priority()`를 호출한다. 라이브러리는 다음 순서로 동작한다.
 
-출처: [lib/pqueue.c:147–158](/root/workspace/FEMU/hw/femu/lib/pqueue.c:147)
+출처: `lib/pqueue.c:147–158` (최신 코드: [lib/pqueue.c:147–159](../../../lib/pqueue.c#L147) — 동작 변경)
 
 ```c
 void pqueue_change_priority(pqueue_t *q, pqueue_pri_t new_pri, void *d)
@@ -275,13 +280,15 @@ void pqueue_change_priority(pqueue_t *q, pqueue_pri_t new_pri, void *d)
 
 라이브러리는 `getpri(d)`로 이전 값을 읽어 위로 올릴지 아래로 내릴지 정한다. FTL이 이미 `vpc`를 줄였다면 여기서 읽는 `old_pri`도 새 값이다. 그러면 두 값이 같아져 `percolate_down()`으로 간다.
 
+> ⚠ 최신 코드: `pqueue_change_priority()`는 이전 값 대신 **부모와 비교**해 방향을 정하므로 이 문제는 고쳐졌다 ([lib/pqueue.c:147–159](../../../lib/pqueue.c#L147)).
+
 **정적 계산 예시:** root가 `vpc=2`, 그 자식 RU가 `vpc=2`인 정상 heap에서 자식 RU의 한 페이지를 무효화해 1로 바꾸었다고 하자. 이 자식은 위로 올라가야 하지만 이미 변경된 1을 old/new로 비교하면 위로 올리는 분기를 타지 않는다. 자식이 leaf라면 root 2와 자식 1의 순서가 남을 수 있다.
 
 이는 해당 호출 규약과 갱신 순서에서 도출한 검토 지점이다. 본 문서를 위해 FEMU workload로 재현한 결과는 아니다. 연구에서 “greedy가 항상 최소 vpc를 뽑았다”고 주장하려면 heap 불변조건이나 선택 당시 실제 최소값을 확인해야 한다. shared priority 필드를 쓰는 두 heap의 연속 갱신도 같은 관점에서 확인한다.
 
 ## 8. CB 점수는 이름보다 계산식을 읽는다
 
-출처: [bbssd/ftl.c:1428–1443](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1428)
+출처: [ftl-fdp.c:544–559](../../ftl-fdp.c#L544)
 
 ```c
     case GC_GLOBAL_CB:
@@ -310,13 +317,15 @@ my_cb = uint64(100000 × u / ((1 - u + 0.001) × float(t)))
 
 이 식은 현재 시각에서 이전 시각을 뺀 age가 아니라 **마지막 무효화 시각 자체**를 분모에 사용한다. 따라서 일반적인 age 기반 cost-benefit 설명을 그대로 대입하면 안 된다.
 
-또한 계산 중 `uint64_t`로 바꾸어 소수 부분을 버리고 `float my_cb`에 저장하며, heap callback도 정수 우선순위로 변환한다(`ftl.c:194–202`). 점수가 작으면 여러 RU의 값이 0으로 같아질 수 있다. 실제 clock 값과 점수 분포를 확인하기 전에는 age 우선순위가 유효하게 구분된다고 단정하지 않는다.
+> ⚠ 최신 코드: CB victim 선택은 이 `my_cb` 순서를 쓰지 않는다. 선택 때 heap 전체를 훑어 `(1-u)·age/u`(age = 지금 − 마지막 무효화)가 최대인 RU를 고른다(vpc 0 우선) ([ftl-fdp.c:689–722](../../ftl-fdp.c#L689)).
+
+또한 계산 중 `uint64_t`로 바꾸어 소수 부분을 버리고 `float my_cb`에 저장하며, heap callback도 정수 우선순위로 변환한다([ftl-fdp.c:108–116](../../ftl-fdp.c#L108)). 점수가 작으면 여러 RU의 값이 0으로 같아질 수 있다. 실제 clock 값과 점수 분포를 확인하기 전에는 age 우선순위가 유효하게 구분된다고 단정하지 않는다.
 
 CB 역시 먼저 `my_cb`를 변경한 뒤 `pqueue_change_priority()`를 호출한다. 위의 이전 값 판별 문제를 함께 검토해야 한다.
 
 ## 9. RUH live page 수: 배치 이동의 양쪽을 읽는다
 
-출처: [bbssd/ftl.c:1461–1462](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1461)
+출처: [ftl-fdp.c:578–579](../../ftl-fdp.c#L578)
 
 ```c
     if (ru->ruh->ruh_live_pages_cnt > 0)
@@ -333,6 +342,8 @@ CB 역시 먼저 `my_cb`를 변경한 뒤 `pqueue_change_priority()`를 호출�
 
 같은 RUH 안에서 덮어쓰면 -1과 +1이 상쇄된다. 서로 다른 RUH라면 소속별 live page 분포가 달라진다. GC에서는 source의 차감이 페이지별 무효화가 아니라 GC 끝의 일괄 차감이므로 6단계에서 별도로 본다.
 
+> ⚠ 최신 코드: GC도 page마다 `mark_page_invalid_fdp()`로 source를 차감한다(끝의 일괄 차감 없음) ([ftl-fdp.c:921](../../ftl-fdp.c#L921)).
+
 0보다 클 때만 감소하는 조건은 음수화를 피하려는 동작이지만, 잘못된 초기 카운터를 정상으로 복구하는 검증은 아니다. 정상적으로 valid 페이지가 있었다면 기존 live page 수도 양수여야 한다.
 
 ## 10. 상태별 불변조건과 연구용 관측
@@ -346,7 +357,9 @@ CB 역시 먼저 `my_cb`를 변경한 뒤 `pqueue_change_priority()`를 호출�
 - global heap의 위치는 `pos`, RUH heap의 위치는 `ruh_pos`와 일치해야 한다.
 - NOISY의 per-RUH 카운터 합을 global victim 수와 무조건 같다고 두면 안 된다. 등록 경로 비대칭과 RUH 유형을 확인해야 한다.
 
-`GC_GLOBAL_WARM` 등 다른 enum 값은 무효화 switch에서 default 경로로 들어갈 수 있다(`ftl.c:1446–1459`). enum 이름만으로 별도의 무효화 정책이 구현되어 있다고 해석하지 않는다.
+`GC_GLOBAL_WARM` 등 다른 enum 값은 무효화 switch에서 default 경로로 들어갈 수 있다([ftl-fdp.c:562–575](../../ftl-fdp.c#L562)). enum 이름만으로 별도의 무효화 정책이 구현되어 있다고 해석하지 않는다.
+
+> ⚠ 최신 코드: `gc_strategy`는 0/1/2/4(greedy, CB, random, NOISY)만 설정할 수 있어 default 경로는 설정으로는 닿지 않는다 ([ftl-geom.c:170–178](../../ftl-geom.c#L170)).
 
 ## 11. 확인 질문과 답
 

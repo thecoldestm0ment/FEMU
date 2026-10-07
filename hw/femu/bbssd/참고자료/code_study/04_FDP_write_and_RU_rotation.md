@@ -1,5 +1,8 @@
 # 4단계 — 페이지 쓰기와 RU 교체
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 현재 로컬 소스 기준이며 예시 geometry와 주소는 설명용이다.
 
 이전: [3단계 — 배치 정보 해석](03_FDP_placement_resolution.md) · 다음: [5단계 — 무효화와 victim 관리](05_FDP_invalidation_and_queues.md)
@@ -28,7 +31,7 @@ flowchart TD
 
 ## 2. 다음 페이지를 얻는 함수는 포인터를 진행시키지 않는다
 
-출처: [bbssd/ftl.c:1158–1174](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1158)
+출처: [ftl-fdp.c:230–246](../../ftl-fdp.c#L230)
 
 ```c
 static struct ppa fdp_get_new_page(struct ssd *ssd, FemuReclaimUnit *ru)
@@ -58,7 +61,7 @@ static struct ppa fdp_get_new_page(struct ssd *ssd, FemuReclaimUnit *ru)
 
 ## 3. 실제 호스트 페이지 쓰기의 FDP 연결
 
-출처: [bbssd/ftl.c:2094–2110](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2094)
+출처: `bbssd/ftl.c:2094–2110` (최신 코드: [ftl-fdp.c:1499–1543](../../ftl-fdp.c#L1499) — 동작 변경)
 
 ```c
         ru = ruh->curr_ru;
@@ -84,9 +87,11 @@ static struct ppa fdp_get_new_page(struct ssd *ssd, FemuReclaimUnit *ru)
 
 이 감소는 **페이지 반복 한 번당 1**이다. `ruamw`가 0이어도 여기서 쓰기를 거절하거나 RU를 교체하지는 않는다. 실제 RU 경계는 아래 물리 좌표 진행에서 결정된다. 초기 단위와의 관계는 7단계에서 확인한다.
 
+> ⚠ 최신 코드: `ruamw`는 page 하나가 덮는 LBA 개수만큼 줄인다(512 B LBA·4 KiB page면 8, 0 아래로는 안 내려감) ([ftl-fdp.c:1538–1543](../../ftl-fdp.c#L1538)).
+
 ## 4. RU 안에서의 진행 순서: channel → LUN → page
 
-출처: [bbssd/ftl.c:1194–1207](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1194)
+출처: `bbssd/ftl.c:1194–1207` (최신 코드: [ftl-internal.h:55–81](../../ftl-internal.h#L55) `ssd_wp_step()` — 동작 변경)
 
 ```c
     check_addr(wpp->ch, spp->nchs);
@@ -107,6 +112,8 @@ static struct ppa fdp_get_new_page(struct ssd *ssd, FemuReclaimUnit *ru)
 
 channel이 가장 먼저 증가한다. channel을 모두 돌면 LUN을 증가시키고, LUN까지 모두 돌면 page offset을 증가시킨다. `pgs_per_blk`까지 도달하면 `pg`를 0으로 만들고 RU 소진을 표시한다.
 
+> ⚠ 최신 코드: `ssd_wp_step()`은 channel → LUN → **plane** → page 순이다(multi-plane 지원). plane이 1개면 아래 표와 같다 ([ftl-internal.h:55–81](../../ftl-internal.h#L55)).
+
 **가상 geometry:** channel 2개, channel당 LUN 2개, block당 페이지 2개, RU당 line 1개라고 두면 RU에는 8페이지가 있다. 현재 line ID가 5라면 주소 순서는 다음과 같다. plane은 계속 0이다.
 
 | 페이지 쓰기 순서 | 쓰기 전 `(ch, lun, pg, blk)` | 쓰기 후 진행 |
@@ -124,11 +131,11 @@ RU를 교체할 때 다음 block ID를 단순히 `blk++`로 얻지 않는다. fr
 
 ### 다중 line 자료구조와 실제 진행 코드의 차이
 
-`ftl.c:1205`의 다중 line 경계 조건은 주석 처리되어 있다. 현재 진행 함수에는 다음 line을 `curline`으로 바꾸는 동작이 없고 첫 line의 페이지 진행이 끝나면 RU 소진으로 처리한다. 따라서 `lines_per_ru` 값만 2 이상으로 바꾸는 것으로 다중 line RU 지원이 완성되지 않는다. 현재 정상 설명은 초기화의 `lines_per_ru=1`을 전제로 한다.
+`ftl.c:1205`(최신 코드에서 삭제됨)의 다중 line 경계 조건은 주석 처리되어 있다. 현재 진행 함수에는 다음 line을 `curline`으로 바꾸는 동작이 없고 첫 line의 페이지 진행이 끝나면 RU 소진으로 처리한다. 따라서 `lines_per_ru` 값만 2 이상으로 바꾸는 것으로 다중 line RU 지원이 완성되지 않는다. 현재 정상 설명은 초기화의 `lines_per_ru=1`을 전제로 한다.
 
 ## 5. 다 쓴 RU는 full인가, victim인가?
 
-출처: [bbssd/ftl.c:1209–1224](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1209)
+출처: [ftl-fdp.c:269–285](../../ftl-fdp.c#L269)
 
 ```c
                 for (int i = 0; i < ru->n_lines; i++) {
@@ -151,7 +158,7 @@ RU를 교체할 때 다음 block ID를 단순히 `blk++`로 얻지 않는다. fr
 
 모든 line의 `vpc`가 `pgs_per_line`과 같으면 모든 페이지가 유효하므로 full 목록에 넣는다. RU 공간이 다 쓰였다는 사실과, 그 데이터가 모두 유효하다는 사실은 별개다.
 
-출처: [bbssd/ftl.c:1225–1238](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1225)
+출처: [ftl-fdp.c:288–299](../../ftl-fdp.c#L288)
 
 ```c
                 } else {
@@ -174,13 +181,15 @@ RU를 쓰는 동안 같은 LPN을 덮어썼다면 이미 무효 페이지가 생
 
 **예시:** 용량 8페이지인 RU가 순서대로 `A,B,A,C,D,E,F,G`를 받았다면 공간은 모두 썼지만 첫 번째 A는 무효다. 결과는 `vpc=7`, `ipc=1`인 victim RU다. 8개의 서로 다른 LPN을 썼다면 `vpc=8`, `ipc=0`인 full RU다.
 
-이 함수의 victim 등록에는 per-RUH queue로 복제하는 실행문이 없다(`ftl.c:1236`은 TODO 주석). 5단계의 full→victim 경로와 비교하면 NOISY 정책이 보는 RUH별 후보 집합에 차이가 생길 수 있다.
+이 함수의 victim 등록에는 per-RUH queue로 복제하는 실행문이 없다(`ftl.c:1236`은 TODO 주석, 최신 코드에서 삭제됨). 5단계의 full→victim 경로와 비교하면 NOISY 정책이 보는 RUH별 후보 집합에 차이가 생길 수 있다.
+
+> ⚠ 최신 코드: `fdp_retire_ru()`는 NOISY 전략이면 per-RUH heap에도 넣는다 ([ftl-fdp.c:302–305](../../ftl-fdp.c#L302)).
 
 ## 6. 새 RU의 할당과 상태 초기화
 
-RU 경계에서는 `fdp_get_new_ru(ssd, ru->rgidx, ruh->ruhid)`를 호출한다(`ftl.c:1244`). 기존 RU와 같은 RG에서 같은 RUH를 위한 공간을 찾는다.
+RU 경계에서는 `fdp_get_new_ru(ssd, ru->rgidx, ruh->ruhid)`를 호출한다([ftl-fdp.c:349](../../ftl-fdp.c#L349)). 기존 RU와 같은 RG에서 같은 RUH를 위한 공간을 찾는다.
 
-출처: [bbssd/ftl.c:1093–1101](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1093)
+출처: [ftl-fdp.c:135–143](../../ftl-fdp.c#L135)
 
 ```c
     ru = QTAILQ_FIRST(&rm->free_ru_list);
@@ -196,7 +205,7 @@ RU 경계에서는 `fdp_get_new_ru(ssd, ru->rgidx, ruh->ruhid)`를 호출한다(
 
 RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 안에 RUH별 독립 free pool 선택이나 데이터 내용 기반 선택은 없다.
 
-출처: [bbssd/ftl.c:1135–1148](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1135)
+출처: `bbssd/ftl.c:1135–1148` (최신 코드: [ftl-fdp.c:186–201](../../ftl-fdp.c#L186) — 동작 변경)
 
 ```c
     new_ru->rgidx = rgidx;
@@ -217,11 +226,13 @@ RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 �
 
 배정된 RU에 RUH를 연결하고 쓰기 좌표를 첫 line 시작으로 초기화한다. `ru_in_use_cnt`가 증가하며 NVMe RUH의 RG별 포인터도 새 RU를 가리킨다.
 
+> ⚠ 최신 코드: `fdp_get_new_ru()`는 NVMe RUH의 `rus[rgidx]`를 바꾸지 않는다. 호스트 경로에서는 호출자가 FTL·NVMe 쪽을 함께 바꾼다 ([ftl-fdp.c:197–201](../../ftl-fdp.c#L197), [1549–1553](../../ftl-fdp.c#L1549)).
+
 주의할 점은 이 함수가 FTL `eruh->curr_ru`와 `eruh->rus[rgidx]`를 모두 갱신하는 함수는 아니라는 것이다. 그 갱신은 호출 경로에 남아 있다.
 
 ## 7. 반환값과 호출자의 책임
 
-출처: [bbssd/ftl.c:1281–1288](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1281)
+출처: [ftl-fdp.c:339–383](../../ftl-fdp.c#L339)
 
 ```c
     if (new_ru != NULL) {
@@ -242,7 +253,7 @@ RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 �
 
 호스트 호출자의 실제 갱신은 다음과 같다.
 
-출처: [bbssd/ftl.c:2112–2125](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2112)
+출처: [ftl-fdp.c:1547–1558](../../ftl-fdp.c#L1547)
 
 ```c
         /* advance RU write pointer; may allocate new RU */
@@ -275,7 +286,7 @@ RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 �
 
 ## 9. 공간 소진 시 주석과 실행문을 구분한다
 
-출처: [bbssd/ftl.c:1244–1255](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1244)
+출처: `bbssd/ftl.c:1244–1255` (최신 코드: [ftl-fdp.c:349–363](../../ftl-fdp.c#L349) — 동작 변경)
 
 ```c
                     new_ru = fdp_get_new_ru(ssd, ru->rgidx, ruh->ruhid);
@@ -294,7 +305,9 @@ RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 �
 
 할당 실패 시 `curr_ru=NULL`을 기록하고 assertion 및 NULL 반환으로 이어진다. 하지만 assertion의 실제 실행 여부는 매크로에 달려 있다.
 
-출처: [bbssd/ftl.h:344–349](/root/workspace/FEMU/hw/femu/bbssd/ftl.h:344)
+> ⚠ 최신 코드: 이 assertion은 삭제됐다. `curr_ru = NULL`로 비우고 NULL을 반환해 호출자가 용량 오류로 처리한다 ([ftl-fdp.c:350–363](../../ftl-fdp.c#L350)).
+
+출처: `bbssd/ftl.h:344–349` (최신 코드: [ftl.h:809–819](../../ftl.h#L809) — 동작 변경)
 
 ```c
 /* FEMU assert() */
@@ -307,11 +320,15 @@ RG의 free 목록 첫 RU를 꺼내고 카운터를 감소시킨다. 이 함수 �
 
 `FEMU_DEBUG_FTL`이 정의되지 않으면 `ftl_assert`는 빈 매크로다. 환경변수 `FEMU_FDP_DEBUG`는 trace를 제어하는 별도 기능이므로 assertion을 켜지 않는다. 실제 빌드 플래그를 확인하지 않고 중단 여부를 단정하지 않는다.
 
+> ⚠ 최신 코드: `FEMU_FTL_ASSERT`만 정의해도 `ftl_assert`가 켜진다 ([ftl.h:815–819](../../ftl.h#L815)).
+
 호스트 루프의 `else if (!ret)` 주석은 다음 반복 상단에서 처리한다고 말하지만, 루프 안에는 `curr_ru==NULL`일 때 복구하는 분기가 없다. 3단계에서 본 복구 시도는 페이지 루프 **앞**에 한 번 있다. 따라서 같은 요청에 페이지가 더 남으면 다음 반복에서 NULL RU로 페이지 할당에 접근할 수 있다. 이는 소스에서 확인한 실패 경로상의 위험이며, 이 문서를 위해 실제 장치를 소진시키는 실험을 실행한 것은 아니다.
+
+> ⚠ 최신 코드: `fdp_drop_active_ru()`로 호스트에 남은 공간 0을 보이고, 다음 page는 `ru == NULL` 검사에서 `NVME_CAP_EXCEEDED`로 멈춘다 ([ftl-fdp.c:1554–1558](../../ftl-fdp.c#L1554), [1507–1510](../../ftl-fdp.c#L1507)).
 
 ## 10. 지연 계산이 사용하는 PPA는 방금 쓴 페이지다
 
-출처: [bbssd/ftl.c:2127–2135](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2127)
+출처: [ftl-fdp.c:1561–1572](../../ftl-fdp.c#L1561)
 
 ```c
         struct nand_cmd swr;
@@ -339,6 +356,9 @@ RU 교체 후에도 `ppa`에는 방금 기록한 페이지 주소가 남아 있�
    보장되지 않는다. RG free 목록에서 꺼낸 RU가 가진 line ID다.
 4. **누가 호스트 쓰기의 `curr_ru`를 갱신하는가?**  
    정상 교체 시 `ssd_stream_write()` 호출부가 반환된 새 RU로 갱신한다. 할당 함수는 NVMe 측 참조 등 일부 상태를 먼저 바꾼다.
+
+   > ⚠ 최신 코드: 할당 함수는 NVMe 쪽 참조를 바꾸지 않는다. 호출부가 FTL·NVMe 양쪽을 함께 갱신한다.
+
 5. **`ruamw==0`이 RU 교체 조건인가?**  
    이 쓰기 경로의 교체 조건은 물리 write pointer의 경계다.
 6. **`lines_per_ru`만 늘리면 되는가?**  

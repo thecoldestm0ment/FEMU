@@ -1,5 +1,9 @@
 # FEMU bbssd 코드 워크스루
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 구조와 동작은 [11_core_structures_and_dispatch.md](11_core_structures_and_dispatch.md)(구조·dispatch), [12_datapath_read_write_trim.md](12_datapath_read_write_trim.md)(read/write/trim), [13_line_gc_geometry_media.md](13_line_gc_geometry_media.md)(line·GC·media), [14_mapping_schemes.md](14_mapping_schemes.md)(mapping) 참고.
+> 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 이 문서는 `hw/femu/bbssd` 안의 `bb.c`, `ftl.h`, `ftl.c`를 처음 읽는 학부생을 위한 코드 설명 자료입니다. FTL의 기본 개념, 예를 들어 LBA, LPN, PPA, mapping ta+ble, garbage collection은 이미 배웠다고 가정합니다. 목표는 개념을 코드와 연결해서 "요청 하나가 들어오면 어떤 함수와 자료구조를 지나가는지" 스스로 따라갈 수 있게 만드는 것입니다.
 
 이번 문서에서는 기본 non-placement FTL 흐름만 다룹니다. `ssd->fdp_enabled` 같은 분기는 고급 placement 기능으로 보고, 지금은 "다른 경로로 빠진다" 정도만 이해하면 됩니다.
@@ -10,9 +14,11 @@
 
 | 파일 | 역할 | 처음 읽을 때의 관점 |
 | --- | --- | --- |
-| [`bb.c`](./bb.c) | FEMU BlackBox SSD 모드의 진입점 | NVMe 요청이 bbssd 모드로 들어오는 문 |
-| [`ftl.h`](./ftl.h) | SSD/FTL 자료구조 정의 | 코드 전체에서 쓰는 용어 사전 |
-| [`ftl.c`](./ftl.c) | 실제 FTL 동작 구현 | 초기화, read/write, mapping, GC, TRIM 처리 |
+| [`bb.c`](../../bb.c) | FEMU BlackBox SSD 모드의 진입점 | NVMe 요청이 bbssd 모드로 들어오는 문 |
+| [`ftl.h`](../../ftl.h) | SSD/FTL 자료구조 정의 | 코드 전체에서 쓰는 용어 사전 |
+| [`ftl.c`](../../ftl.c) | 실제 FTL 동작 구현 | 초기화, read/write, mapping, GC, TRIM 처리 |
+
+> ⚠ 최신 코드: `ftl.c`는 `ftl.c`(초기화·dispatch), `ftl-datapath.c`(read/write/trim), `ftl-line-gc.c`(line·GC), `ftl-map*.c`(mapping), `ftl-geom.c`, `ftl-media.c`, `ftl-fdp.c` 등으로 나뉘었고, `ftl_thread()`는 `femu_ftl_thread()`(femu.c) + `bb_ftl_process_req()`(ftl.c)로 바뀌었다 ([11](11_core_structures_and_dispatch.md) §2, §6).
 
 가장 큰 요청 흐름은 다음과 같습니다.
 
@@ -67,6 +73,8 @@ struct ssd 할당
 ```
 
 `n->ssd = g_malloc0(sizeof(struct ssd))`에서 FEMU controller인 `FemuCtrl` 안에 bbssd 전용 SSD 상태를 붙입니다. 이후 FTL 코드는 `n->ssd`를 통해 `struct ssd`에 접근합니다.
+
+> ⚠ 최신 코드: `bb_init(n, ns, errp)`는 geometry·용량·FDP를 먼저 검사하고 namespace마다 `ns->ssd`를 할당한 뒤 `ssd_init(n, ns)`를 부른다(`n->ssd`는 첫 namespace의 것) ([bb.c:234–282](../../bb.c#L234)).
 
 왜 필요한가:
 
@@ -400,6 +408,8 @@ ssd_init_params()
 
 고급 placement 기능이 켜진 경우에는 별도 초기화 경로로 들어가지만, 이번 문서에서는 기본 FTL 경로만 봅니다.
 
+> ⚠ 최신 코드: `ssd_init()`은 FTL thread를 만들지 않는다. thread는 namespace를 모두 만든 뒤 `femu.c`가 컨트롤러당 하나 만든다. 그 사이에 media·GC policy·mapping scheme·read cache 초기화가 추가됐다 ([ftl.c:33](../../ftl.c#L33), [femu.c:2651–2656](../../../femu.c#L2651)).
+
 ### `ssd_init_params()`
 
 역할: FEMU 설정값을 읽어서 SSD geometry와 GC threshold를 계산합니다.
@@ -586,6 +596,8 @@ uint64_t end_lpn = (lba + len - 1) / spp->secs_per_pg;
 
 여기서 `secs_per_pg`는 page 하나가 몇 sector인지 나타냅니다. 즉 sector 단위 LBA 요청을 page 단위 LPN으로 바꾸는 것입니다.
 
+> ⚠ 최신 코드: `ssd_lpn_range()`가 namespace LBA 크기와 backend offset으로 byte 위치를 구한 뒤 page 크기로 나눈다(512 B LBA면 위 식과 같다) ([ftl-internal.h:331–347](../../ftl-internal.h#L331)).
+
 예를 들어 page 하나가 8 sectors라면:
 
 ```text
@@ -615,6 +627,8 @@ LBA와 nlb로 start_lpn/end_lpn 계산
 ```
 
 왜 가장 큰 latency를 반환할까요? 여러 page를 읽는 요청에서 각 page read가 서로 다른 LUN에서 병렬처럼 진행될 수 있습니다. 요청 전체 완료 시간은 각 page latency의 합이 아니라 가장 늦게 끝나는 sub-request에 가까워집니다. 그래서 `maxlat`을 사용합니다.
+
+> ⚠ 최신 코드: write buffer → (dftl CMT) → maptbl → read cache → NAND 순으로 보고, 장치 범위 밖이면 `NVME_LBA_RANGE`로 실패한다 ([ftl-datapath.c:825](../../ftl-datapath.c#L825), [12](12_datapath_read_write_trim.md) §3).
 
 중요한 함수:
 
@@ -661,6 +675,8 @@ LBA와 nlb로 start_lpn/end_lpn 계산
 ```
 
 이 함수는 FTL의 핵심입니다. NAND는 같은 page에 overwrite할 수 없으므로, 기존 데이터가 있으면 다음처럼 처리합니다.
+
+> ⚠ 최신 코드: write buffer 경로와 direct 경로로 나뉘고, direct 경로는 LPN마다 `ssd_gc_until_clear()` 뒤 `ssd_program_lpn()`으로 쓴다 ([ftl-datapath.c:926](../../ftl-datapath.c#L926), [12](12_datapath_read_write_trim.md) §4).
 
 ```text
 old PPA: valid -> invalid
@@ -767,6 +783,8 @@ ch 증가
 
 이 코드에서 line 하나는 여러 channel/LUN의 같은 block id를 묶은 단위입니다. 그래서 `ch`와 `lun`을 돌면서 여러 LUN에 write를 분산하고, page가 끝까지 차면 line 하나가 다 찬 것으로 봅니다.
 
+> ⚠ 최신 코드: `ssd_wp_step()`은 ch → LUN → **plane** → page 순이다(plane이 1개면 위와 같다) ([ftl-internal.h:55–81](../../ftl-internal.h#L55)).
+
 line이 다 찼을 때 분류 기준:
 
 ```text
@@ -849,6 +867,8 @@ select_victim_line()
 
 여기서 victim line 하나는 여러 LUN의 같은 block 번호들을 묶은 것이므로, `do_gc()`는 channel과 LUN을 모두 돌면서 같은 block id를 가진 block들을 정리합니다.
 
+> ⚠ 최신 코드: `reclaim_line()`이 모든 valid page를 먼저 옮긴 뒤 LUN마다 `ssd_erase_lun_block()`으로 erase하고, 옮길 곳이 없으면 erase 없이 line을 되돌린다 ([ftl-line-gc.c:1156](../../ftl-line-gc.c#L1156), [13](13_line_gc_geometry_media.md) §5).
+
 ### `clean_one_block()`
 
 역할: victim block 하나 안에서 valid page만 골라 새 위치로 옮깁니다.
@@ -890,6 +910,8 @@ old_ppa로 rmap 조회
 ```
 
 여기서 `rmap`이 꼭 필요합니다. GC는 physical page를 보고 시작하기 때문에, 그 page가 어떤 LPN의 데이터인지 알아야 mapping table을 새 PPA로 고칠 수 있습니다.
+
+> ⚠ 최신 코드: 옮긴 뒤 old page를 바로 invalid로 만들고 rmap을 비운다. `maptbl`/`rmap` 갱신은 mapping scheme의 `gc_relocate_commit()`이 한다 ([ftl-line-gc.c:726](../../ftl-line-gc.c#L726)).
 
 ```text
 GC 전:
@@ -947,6 +969,8 @@ DSM range 목록 확인
 TRIM은 host가 "이 논리 주소의 데이터는 더 이상 필요 없다"고 알려주는 명령입니다. FTL 입장에서는 해당 page를 invalid로 만들 수 있으므로, 나중에 GC가 더 쉽게 공간을 회수할 수 있습니다.
 
 ## 7. `ftl_thread()`: request가 FTL로 들어오는 곳
+
+> ⚠ 최신 코드: `ftl_thread()`는 없어졌다. `femu.c`의 `femu_ftl_thread()`가 ring을 돌고, opcode 분기와 background GC는 `ftl.c`의 `bb_ftl_process_req()`가 한다. 그래서 background GC는 완료를 `to_poller`에 넣기 **전**에 돈다 ([femu.c:1881](../../../femu.c#L1881), [ftl.c:547](../../ftl.c#L547), [11](11_core_structures_and_dispatch.md) §6).
 
 `ftl_thread()`는 FTL의 메인 루프입니다.
 

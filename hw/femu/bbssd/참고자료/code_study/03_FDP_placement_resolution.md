@@ -1,5 +1,8 @@
 # 3단계 — 호스트 배치 정보에서 RG·RUH·RU 선택까지
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 인용은 현재 로컬 코드의 발췌다. PID 예시는 실행 결과가 아닌 코드 계산 예시다.
 
 이전 자료: [2단계 — 초기화와 공간 구성](02_FDP_initialization.md)
@@ -12,7 +15,7 @@
 
 | 이름 | 이 경로에서의 의미 |
 |---|---|
-| DTYPE | 명령의 directive 종류. 코드의 `NVME_DIRECTIVE_DATA_PLACEMENT` 값은 `0x2` (`nvme.h:54`) |
+| DTYPE | 명령의 directive 종류. 코드의 `NVME_DIRECTIVE_DATA_PLACEMENT` 값은 `0x2` ([nvme.h:54](../../../nvme.h#L54)) |
 | DSPEC | directive에 딸린 16비트 값. FDP 쓰기에서는 이 값을 PID로 해석 |
 | PID | Placement Identifier. 해석 함수가 PH와 RG로 분리하는 입력 |
 | PH | Placement Handle. namespace의 `phs[]` 배열을 조회하는 인덱스 |
@@ -36,9 +39,9 @@ flowchart TD
 
 ## 2. 명령에서 DTYPE·DSPEC을 추출한다
 
-`bb.c`의 `bb_io_cmd()`는 읽기·쓰기를 `bb_nvme_rw()`로 보내며, 이 함수는 `nvme_rw()`를 호출한다(`bb.c:81–95`). 배치 비트가 어디서 들어오는지 확인하기 위해 그 함수의 경계 부분만 본다.
+`bb.c`의 `bb_io_cmd()`는 읽기·쓰기를 `bb_nvme_rw()`로 보내며, 이 함수는 `nvme_rw()`를 호출한다([bb.c:466–485](../../bb.c#L466)). 배치 비트가 어디서 들어오는지 확인하기 위해 그 함수의 경계 부분만 본다.
 
-출처: [nvme-io.c:522–533](/root/workspace/FEMU/hw/femu/nvme-io.c:522)
+출처: [nvme-io.c:960–971](../../../nvme-io.c#L960)
 
 ```c
     req->slba = slba;
@@ -59,13 +62,13 @@ flowchart TD
 
 추출 조건은 쓰기이면서 subsystem이 존재하고 `endgrp->fdp.enabled`가 참인 것이다. FTL에서의 FDP 분기는 `ssd->fdp_enabled`를 보므로, 두 계층의 활성 상태를 혼동하지 않는다.
 
-`req->nlb`는 원래 명령의 0-based NLB 값을 그대로 담은 것이 아니다. `nvme_rw()`가 `le16_to_cpu(rw->nlb) + 1`로 변환한 실제 LBA 개수다(`nvme-io.c:443–454`). 따라서 뒤에서 통계 바이트 수나 LPN 범위를 계산할 때 다시 1을 더하지 않는다.
+`req->nlb`는 원래 명령의 0-based NLB 값을 그대로 담은 것이 아니다. `nvme_rw()`가 `le16_to_cpu(rw->nlb) + 1`로 변환한 실제 LBA 개수다([nvme-io.c:760–771](../../../nvme-io.c#L760)). 따라서 뒤에서 통계 바이트 수나 LPN 범위를 계산할 때 다시 1을 더하지 않는다.
 
-이후 요청은 `to_ftl` ring에 들어간다(`nvme-io.c:198`). non-FDP에서 공부한 ring·poller 동작 자체는 여기서 반복하지 않는다.
+이후 요청은 `to_ftl` ring에 들어간다([nvme-io.c:369](../../../nvme-io.c#L369)). non-FDP에서 공부한 ring·poller 동작 자체는 여기서 반복하지 않는다.
 
 ## 3. FDP 경로 선택은 요청에 유효한 PID가 있는지와 별개다
 
-출처: [bbssd/ftl.c:2562–2569](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2562)
+출처: [ftl.c:616–622](../../ftl.c#L616)
 
 ```c
             switch (req->cmd.opcode) {
@@ -86,7 +89,7 @@ FTL은 SSD의 `fdp_enabled`로 `nvme_do_write_fdp()` 호출 여부를 결정한�
 
 ### 4.1 먼저 요청 바이트 수를 누적한다
 
-출처: [bbssd/ftl.c:2149–2152](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2149)
+출처: `bbssd/ftl.c:2149–2152` (최신 코드: [ftl-fdp.c:1672–1693](../../ftl-fdp.c#L1672) `fdp_count_write()` — 동작 변경)
 
 ```c
     /* update FDP host bytes written stats */
@@ -99,9 +102,11 @@ FTL은 SSD의 `fdp_enabled`로 `nvme_do_write_fdp()` 호출 여부를 결정한�
 
 통계 전체는 7단계에서 다루되, **증가 시점이 실제 페이지 배치보다 앞**이라는 사실은 지금 기억한다.
 
+> ⚠ 최신 코드: 통계는 `ssd_stream_write()` **뒤**에 `fdp_count_write()`가 실제로 쓴 `req->xfer_bytes`만큼 더한다 ([ftl-fdp.c:1713–1720](../../ftl-fdp.c#L1713)).
+
 ### 4.2 RUH별 통계에 귀속시키기 위해 PH를 해석한다
 
-출처: [bbssd/ftl.c:2155–2170](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2155)
+출처: `bbssd/ftl.c:2155–2170` (최신 코드: [ftl-fdp.c:1681–1692](../../ftl-fdp.c#L1681) — 동작 변경)
 
 ```c
     uint16_t pid = req->fdp_dspec;
@@ -124,13 +129,13 @@ FTL은 SSD의 `fdp_enabled`로 `nvme_do_write_fdp()` 호출 여부를 결정한�
 
 DTYPE이 배치 directive가 아니거나 PID 해석이 실패하면 `ph=0`, `rg=0`을 사용한다. 그 후 PH 매핑으로 RUH ID를 얻어 FTL/NVMe RUH의 통계를 갱신하고 `ssd_stream_write()`를 호출한다.
 
-`ssd_stream_write()`도 요청에서 PID와 DTYPE을 다시 읽어 해석한다(`ftl.c:1998–2004`). 따라서 여기서 PH를 계산했다고 이후 함수에 PH가 인자로 전달되는 구조는 아니다.
+`ssd_stream_write()`도 요청에서 PID와 DTYPE을 다시 읽어 해석한다([ftl-fdp.c:1377–1383](../../ftl-fdp.c#L1377)). 따라서 여기서 PH를 계산했다고 이후 함수에 PH가 인자로 전달되는 구조는 아니다.
 
 두 곳의 정책을 변경하면 기본 배치 및 오류 처리의 일치 여부도 확인해야 한다. 특히 통계 함수에는 배치 함수의 RUH ID clamp와 동일한 검사가 없다는 점을 뒤에서 다시 짚는다.
 
 ## 5. `nvme_parse_pid()`는 어떤 값을 검사하는가?
 
-출처: [nvme-io.c:816–823](/root/workspace/FEMU/hw/femu/nvme-io.c:816)
+출처: [nvme-io.c:1684–1691](../../../nvme-io.c#L1684)
 
 ```c
 bool nvme_parse_pid(NvmeNamespace *ns, uint16_t pid,
@@ -145,7 +150,7 @@ bool nvme_parse_pid(NvmeNamespace *ns, uint16_t pid,
 
 PID에서 RG와 PH를 추출한 다음 두 값의 범위를 확인한다. 범위 검사의 실제 조건은 다음과 같다.
 
-출처: [nvme-io.c:794–802](/root/workspace/FEMU/hw/femu/nvme-io.c:794)
+출처: [nvme-io.c:1662–1670](../../../nvme-io.c#L1662)
 
 ```c
 static inline bool nvme_ph_valid(NvmeNamespace *ns, uint16_t ph)
@@ -163,7 +168,7 @@ static inline bool nvme_rg_valid(NvmeEnduranceGroup *endgrp, uint16_t rg)
 
 ### 5.1 RG가 하나인 일반 경로: `rgif == 0`
 
-출처: [nvme-io.c:772–792](/root/workspace/FEMU/hw/femu/nvme-io.c:772)
+출처: [nvme-io.c:1640–1660](../../../nvme-io.c#L1640)
 
 ```c
 uint16_t nvme_pid2ph(NvmeNamespace *ns, uint16_t pid)
@@ -189,7 +194,7 @@ uint16_t nvme_pid2rg(NvmeNamespace *ns, uint16_t pid)
 }
 ```
 
-`rgif == 0`이면 PH는 PID 전체이고 RG는 0이다. `femu.c:45–47`에서 `nrg == 1`일 때 `rgif=0`으로 설정하는 실행문을 확인할 수 있다.
+`rgif == 0`이면 PH는 PID 전체이고 RG는 0이다. [femu.c:77–79](../../../femu.c#L77)에서 `nrg == 1`일 때 `rgif=0`으로 설정하는 실행문을 확인할 수 있다.
 
 예를 들어 `nphs=4`, `nrg=1`, `rgif=0`, PID=2라면 PH=2, RG=0이며 범위 검사를 통과한다. PID=4는 PH 범위 밖이므로 해석 실패다.
 
@@ -204,7 +209,7 @@ ph = pid & ((1 << (15 - rgif)) - 1)
 
 RG는 상위 쪽을 사용하지만 PH 마스크는 `15 - rgif`비트다. 비교를 위해 PID 생성 함수도 읽는다.
 
-출처: [nvme-io.c:804–814](/root/workspace/FEMU/hw/femu/nvme-io.c:804)
+출처: [nvme-io.c:1672–1682](../../../nvme-io.c#L1672)
 
 ```c
 static inline uint16_t nvme_make_pid(NvmeNamespace *ns, uint16_t rg,
@@ -230,7 +235,7 @@ static inline uint16_t nvme_make_pid(NvmeNamespace *ns, uint16_t rg,
 
 진입 조건은 다음과 같다.
 
-출처: [bbssd/ftl.c:1998–2004](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1998)
+출처: [ftl-fdp.c:1377–1383](../../ftl-fdp.c#L1377)
 
 ```c
     /* parse placement info from request */
@@ -246,7 +251,7 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
 
 실패 블록 내부의 이벤트 처리는 다음과 같다.
 
-출처: [bbssd/ftl.c:2005–2020](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2005)
+출처: [ftl-fdp.c:1384–1401](../../ftl-fdp.c#L1384)
 
 ```c
         /* generate INVALID_PID event if placement was attempted */
@@ -277,7 +282,7 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
 
 ## 7. PH에서 RUH ID로: 한 번의 간접 참조가 있다
 
-출처: [bbssd/ftl.c:2023–2031](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2023)
+출처: [ftl-fdp.c:1405–1413](../../ftl-fdp.c#L1405)
 
 ```c
     ruhid = ns->fdp.phs[ph];
@@ -291,7 +296,7 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
     ruh = &ssd->ruhs[ruhid];
 ```
 
-`ph`는 namespace의 `phs` 배열을 조회한다. 그 결과인 `ruhid`가 `ssd->ruhs[]`의 인덱스다. 현재 `femu.c:214–235`는 모든 RUH를 순서대로 namespace에 배정하고 `phs[i]=i`로 초기화한다. 기본 상태에서 PH와 RUH ID의 숫자가 같아도 역할은 다르다.
+`ph`는 namespace의 `phs` 배열을 조회한다. 그 결과인 `ruhid`가 `ssd->ruhs[]`의 인덱스다. 현재 [femu.c:359–380](../../../femu.c#L359)는 모든 RUH를 순서대로 namespace에 배정하고 `phs[i]=i`로 초기화한다. 기본 상태에서 PH와 RUH ID의 숫자가 같아도 역할은 다르다.
 
 **매핑의 의미를 보여주기 위한 가상 예시:** `phs = [2, 0, 3, 1]`이라고 두면 PH=1은 RUH 0을, PH=0은 RUH 2를 선택한다. 이 표는 현재 초기화의 출력이 아니라 간접 참조를 설명하기 위한 가정이다.
 
@@ -307,7 +312,7 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
 
 현재 RU가 없을 때는 다음 코드가 새 RU 배정을 시도한다.
 
-출처: [bbssd/ftl.c:2052–2065](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2052)
+출처: [ftl-fdp.c:1438–1458](../../ftl-fdp.c#L1438)
 
 ```c
             FemuReclaimUnit *fresh = fdp_get_new_ru(ssd, rgid, ruhid);
@@ -328,13 +333,15 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
 
 성공하면 FTL의 `rus[rgid]`, NVMe 측 `ruh->rus[rgid]`, `curr_ru`를 갱신한다. 실패해 `curr_ru`가 계속 없으면 지연값 0을 반환한다.
 
-주변 `ftl.c:2037–2050`의 주석은 먼저 foreground GC를 실행한다고 설명하지만, 그 위치의 GC 반복문과 호출은 주석 처리되어 있다. 위 실행문은 먼저 free RU 할당을 시도한다. 별도의 foreground GC 반복문은 이 블록 **뒤** `ftl.c:2075–2088`에 있다.
+> ⚠ 최신 코드: 이때 `req->status = NVME_CAP_EXCEEDED | NVME_DNR`로 명령을 실패시킨다 ([ftl-fdp.c:1448–1458](../../ftl-fdp.c#L1448)).
 
-또한 `return 0`의 주석에 재시도가 언급되어 있어도 이 블록에는 재시도 예약 동작이 없다. 호출자는 그 반환값을 지연으로 사용하며 FTL thread는 요청을 completion용 ring에 넣는다(`ftl.c:2585–2588`). 따라서 여기서는 **자동 재시도를 보장하는 근거가 없다**고 읽어야 한다. 앞서 통계가 증가했다는 사실도 실패 경로의 측정 해석에 영향을 준다.
+주변 [ftl-fdp.c:1419–1436](../../ftl-fdp.c#L1419)의 주석은 먼저 foreground GC를 실행한다고 설명하지만, 그 위치의 GC 반복문과 호출은 주석 처리되어 있다. 위 실행문은 먼저 free RU 할당을 시도한다. 별도의 foreground GC 반복문은 이 블록 **뒤** `ftl.c:2075–2088`(최신 코드: [ftl-fdp.c:1473–1485](../../ftl-fdp.c#L1473) — 동작 변경)에 있다.
+
+또한 `return 0`의 주석에 재시도가 언급되어 있어도 이 블록에는 재시도 예약 동작이 없다. 호출자는 그 반환값을 지연으로 사용하며 FTL thread는 요청을 completion용 ring에 넣는다([femu.c:1971–1977](../../../femu.c#L1971)). 따라서 여기서는 **자동 재시도를 보장하는 근거가 없다**고 읽어야 한다. 앞서 통계가 증가했다는 사실도 실패 경로의 측정 해석에 영향을 준다.
 
 정상 경로에서는 아래 참조를 사용한다.
 
-출처: [bbssd/ftl.c:2067–2069](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2067)
+출처: [ftl-fdp.c:1461–1463](../../ftl-fdp.c#L1461)
 
 ```c
     ru = ruh->rus[rgid];
@@ -348,7 +355,7 @@ C의 `||` 단락 평가 때문에 DTYPE이 배치 directive가 아니면 `nvme_p
 
 페이지 반복문은 매번 다음과 같이 현재 RU를 다시 읽는다.
 
-출처: [bbssd/ftl.c:2090–2105](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2090)
+출처: [ftl-fdp.c:1488–1525](../../ftl-fdp.c#L1488)
 
 ```c
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {

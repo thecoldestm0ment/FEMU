@@ -1,5 +1,8 @@
 # 8단계 — 통합 실행 추적과 연구 검증
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 이번 단원은 **코드를 따라 계산한 가상 실행**이다. QEMU/fio를 실행한 실험 결과나 성능 예측이 아니다.
 
 이전: [7단계 — 통계·이벤트·TRIM](07_FDP_statistics_events_and_trim.md)
@@ -32,7 +35,7 @@
 
 ## 3. S0 — 초기화 직후
 
-출처: [bbssd/ftl.c:2344–2352](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2344)
+출처: [ftl-fdp.c:1930–1950](../../ftl-fdp.c#L1930)
 
 ```c
         /* allocate per-RG RU pointer array */
@@ -62,7 +65,7 @@ host active RU는 2개, free는 6개다. RUH별 `ru_in_use_cnt`는 각각 1이�
 
 PID=0으로 A~H 8개를 쓰면 PH=0, RUH=H0가 선택된다. 모두 처음 쓰는 LPN이므로 R0는 8개 valid 페이지로 채워진다.
 
-출처: [bbssd/ftl.c:1222–1224](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1222)
+출처: [ftl-fdp.c:281–283](../../ftl-fdp.c#L281)
 
 ```c
                 if (is_full) {
@@ -85,7 +88,7 @@ free: R3, R4, R5, R6, R7
 
 이번에는 PID=1로 A,B,C,D를 다시 쓴다. 새 페이지는 H1의 R1로 가고, 이전 페이지의 무효화는 R0를 따라간다.
 
-출처: [bbssd/ftl.c:2094–2105](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2094)
+출처: [ftl-fdp.c:1499–1525](../../ftl-fdp.c#L1499)
 
 ```c
         ru = ruh->curr_ru;
@@ -139,7 +142,7 @@ free: R3, R4, R5, R6, R7
 
 후보는 R0 하나다. `force=true`이므로 background의 ipc 보류 조건을 건너뛴다. R0의 RUH는 PI인 H0다.
 
-출처: [bbssd/ftl.c:1876–1882](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1876)
+출처: [ftl-fdp.c:1188–1207](../../ftl-fdp.c#L1188)
 
 ```c
     if (victim_ruh->ruh_type == NVME_RUHT_PERSISTENTLY_ISOLATED) {
@@ -155,7 +158,7 @@ H0의 `gc_ru`가 없으므로 R3를 새로 할당한다. free 수는 일시적�
 
 ### 7.2 E~H의 매핑 이동
 
-출처: [bbssd/ftl.c:1699–1702](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1699)
+출처: [ftl-fdp.c:912–915](../../ftl-fdp.c#L912)
 
 ```c
     new_ppa = fdp_get_new_page(ssd, dest_ru);
@@ -170,7 +173,7 @@ R3는 8페이지 중 4페이지만 사용하므로 GC RU 교체는 일어나지 
 
 ### 7.3 source 집계 차감과 free 반환
 
-출처: [bbssd/ftl.c:1952–1955](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1952)
+출처: `bbssd/ftl.c:1952–1955` (최신 코드: [ftl-fdp.c:1281–1283](../../ftl-fdp.c#L1281) — 동작 변경)
 
 ```c
     if (ssd->ruhs[victim_ru->ruh->ruhid].ru_in_use_cnt > 0) {
@@ -180,6 +183,8 @@ R3는 8페이지 중 4페이지만 사용하므로 GC RU 교체는 일어나지 
 ```
 
 H0 live pages는 복사 중 8→12가 되었다가 source 4개를 일괄 차감해 8로 돌아간다. RU 수는 3→2가 되고, R0를 free 목록 끝에 반환하면 free 수는 4→5가 된다.
+
+> ⚠ 최신 코드: GC가 page마다 source를 invalid 처리하므로 H0 live pages는 복사 중에도 8을 유지하고 끝의 일괄 차감은 없다. source rmap도 page마다 비운다 ([ftl-fdp.c:915–922](../../ftl-fdp.c#L915)).
 
 ```text
 H0: curr_ru=R2[I,J,K,L,...], gc_ru=R3[E,F,G,H,...]
@@ -206,7 +211,7 @@ R0는 재사용 가능하지만 `ru->ruh`에 이전 H0 참조가 남을 수 있�
 
 ## 8. S4의 통계를 독립적으로 계산한다
 
-출처: [bbssd/ftl.c:1937–1940](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1937)
+출처: [ftl-fdp.c:1264–1267](../../ftl-fdp.c#L1264)
 
 ```c
     /* update FDP statistics: media bytes written (GC writes) */
@@ -338,6 +343,9 @@ WAF가 낮아졌다는 관찰만으로 tail latency·공정성·SSD 수명까지
    새 PI GC RU를 하나 소비하고 source RU 하나를 반환했기 때문이다.
 3. **S4 GC 중 H0 live pages가 잠시 12가 되는 것은 항상 오류인가?**  
    아니다. destination 증가 후 source 일괄 차감이 아직 실행되지 않은 중간 상태다.
+
+   > ⚠ 최신 코드: 지금은 12가 되지 않는다(page마다 -1, +1).
+
 4. **S6의 R3는 vpc가 0인데 왜 victim이 아닌가?**  
    미소진 활성 GC RU이며 full→victim 또는 RU 소진 등록 경로를 거치지 않았다.
 5. **WAF가 1.25에서 1.20으로 줄면 정책이 개선된 것인가?**  

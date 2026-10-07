@@ -1,5 +1,8 @@
 # 1단계 — FDP 객체 관계와 쓰기 포인터
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 2026-09-17의 로컬 소스를 확인했다. 인용은 해당 소스의 발췌이며, 예시는 실행 결과가 아니다.
 
 [전체 학습 계획](00_FDP_study_plan.md)
@@ -38,7 +41,7 @@ flowchart TD
 RUH는 RG 안의 RU 배열을 통째로 소유하는 구조가 아니다. RG에 있는 RU를 할당받아 참조한다. 같은 RUH에 과거에 채운 RU와 현재 쓰는 RU가 함께 연결될 수 있으므로, `curr_ru` 하나가 그 RUH의 전체 데이터를 대표하지 않는다.
 
 ## 3. RG: RU 공간과 관리 상태를 묶는다
-출처: [ftl.h:292–297](/root/workspace/FEMU/hw/femu/bbssd/ftl.h:292)
+출처: [ftl.h:497–502](../../ftl.h#L497)
 
 ```c
 struct FemuReclaimGroup {
@@ -61,7 +64,7 @@ struct FemuReclaimGroup {
 | `ruh->rus[rgid]` | `FemuReclaimUnit *` | 해당 RUH가 그 RG에서 참조하는 RU |
 
 RU 배정 시 실제 공간은 다음과 같이 RG의 free 목록에서 가져온다.
-출처: [ftl.c:1093–1101](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1093)
+출처: [ftl-fdp.c:135–143](../../ftl-fdp.c#L135)
 
 ```c
     ru = QTAILQ_FIRST(&rm->free_ru_list);
@@ -78,7 +81,7 @@ RU 배정 시 실제 공간은 다음과 같이 RG의 free 목록에서 가져�
 성공하면 해당 RU를 free 목록에서 빼고 `free_ru_cnt`를 1 줄인다. 목록이 비어 있으면 `NULL`을 반환한다. 따라서 RUH별 배치가 나뉘어 있어도, 이 함수의 공간 할당 출처는 RG의 free RU 목록이다.
 
 ## 4. RU: line, 소유 RUH, 쓰기 위치를 연결한다
-출처: [ftl.h:251–265](/root/workspace/FEMU/hw/femu/bbssd/ftl.h:251)
+출처: [ftl.h:447–461](../../ftl.h#L447)
 
 ```c
 struct FemuReclaimUnit {
@@ -106,7 +109,7 @@ struct FemuReclaimUnit {
 - `pos`, `ruh_pos`: 서로 다른 victim heap 안에서의 위치다. 물리 주소가 아니다.
 
 현재 초기화는 RU 하나를 line 하나로 설정한다.
-출처: [ftl.c:2391–2394](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2391)
+출처: [ftl-fdp.c:1999–2002](../../ftl-fdp.c#L1999)
 
 ```c
     uint64_t runs = endgrp->fdp.runs;
@@ -118,7 +121,7 @@ struct FemuReclaimUnit {
 따라서 **현재 설정에서는 RU 1개 = line 1개**다. 구조체가 여러 line을 담을 수 있다는 사실과 현재 실제 설정을 구분해야 한다. `runs`가 읽힌다는 이유만으로 이 함수가 그 값에서 `lines_per_ru`를 계산한다고 해석해서도 안 된다.
 
 line에서 RU로 돌아가는 연결도 초기화된다.
-출처: [ftl.c:2230–2239](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2230)
+출처: [ftl-fdp.c:1794–1803](../../ftl-fdp.c#L1794)
 
 ```c
     femu_ru->lines = g_malloc0(femu_ru->n_lines * sizeof(struct line *));
@@ -136,7 +139,7 @@ line에서 RU로 돌아가는 연결도 초기화된다.
 `get_next_free_line()`으로 받은 line 주소를 RU에 저장하고, 그 line의 `my_ru`를 해당 RU로 설정한다. 이후 기존 PPA의 line을 찾으면 소속 RU까지 추적할 수 있다. 이것이 덮어쓰기 무효화를 RU 통계로 전달하는 연결점이다.
 
 ## 5. RUH: 현재 쓰기 RU와 GC 쓰기 RU를 참조한다
-출처: [ftl.h:276–290](/root/workspace/FEMU/hw/femu/bbssd/ftl.h:276)
+출처: [ftl.h:478–494](../../ftl.h#L478)
 
 ```c
 struct FemuRuHandle {
@@ -173,7 +176,7 @@ struct FemuRuHandle {
 ### 5.1 `rus[]`와 `curr_ru`는 어떻게 연결되는가?
 
 RUH 초기화에서 RG마다 RU를 할당하고 포인터를 설정한다.
-출처: [ftl.c:2344–2352](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2344)
+출처: `ftl.c:2344–2352` (최신 코드: [ftl-fdp.c:1930–1950](../../ftl-fdp.c#L1930) — 동작 변경)
 
 ```c
         /* allocate per-RG RU pointer array */
@@ -188,7 +191,7 @@ RUH 초기화에서 RG마다 RU를 할당하고 포인터를 설정한다.
 ```
 
 그리고 호스트 쓰기 경로는 다음과 같이 읽는다.
-출처: [ftl.c:2067–2069](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2067)
+출처: [ftl-fdp.c:1461–1463](../../ftl-fdp.c#L1461)
 
 ```c
     ru = ruh->rus[rgid];
@@ -200,10 +203,12 @@ RUH 초기화에서 RG마다 RU를 할당하고 포인터를 설정한다.
 
 **연구 시 확인할 지점:** `rus[]`는 RG별 배열이지만 `curr_ru`는 단일 포인터이며, 초기화 반복문은 마지막에 할당한 RU를 `curr_ru`에 남긴다. 따라서 배열이 있다는 이유만으로 다중 RG의 모든 쓰기 경로가 일관되게 지원된다고 단정할 수 없다. 다중 RG를 실험하려면 포인터 갱신과 위 assertion의 만족 여부를 별도로 검증해야 한다. 이번 예시는 RG 1개를 전제로 한다.
 
+> ⚠ 최신 코드: 반복문이 끝난 뒤 `curr_ru = rus[0]`(RG 0의 RU)로 둔다. 마지막 RG의 RU가 아니다 ([ftl-fdp.c:1950](../../ftl-fdp.c#L1950)).
+
 ### 5.2 `gc_ru`는 실제로 어디에 쓰이는가?
 
 GC의 최종 페이지 쓰기 함수에서 목적 RU를 고르는 실행문이다.
-출처: [ftl.c:1689–1697](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1689)
+출처: `ftl.c:1689–1697` (최신 코드: [ftl-fdp.c:606–623](../../ftl-fdp.c#L606) `fdp_gc_frontier()` — 동작 변경)
 
 ```c
     if (dest_ruh->ruh_type == NVME_RUHT_PERSISTENTLY_ISOLATED)
@@ -219,19 +224,19 @@ GC의 최종 페이지 쓰기 함수에서 목적 RU를 고르는 실행문이�
 
 PI에서는 `dest_ruh->gc_ru`, II에서는 마지막 RUH의 `curr_ru`를 선택한다. 마지막 RUH를 쓰는 조건은 이 구현의 규칙으로 이해한다.
 
-그 전에 `do_gc_fdp_style()`은 PI이면 `dest_ruh = victim_ruh`로 두고, II이면 `dest_ruh = &ssd->ruhs[ssd->nruhs - 1]`로 둔다. 근거는 `ftl.c:1876–1889`다. 따라서 현재 실행 경로는 다음과 같다.
+그 전에 `do_gc_fdp_style()`은 PI이면 `dest_ruh = victim_ruh`로 두고, II이면 `dest_ruh = &ssd->ruhs[ssd->nruhs - 1]`로 둔다. 근거는 [ftl-fdp.c:1188–1195](../../ftl-fdp.c#L1188)다. 따라서 현재 실행 경로는 다음과 같다.
 
 | victim의 유형 | GC 목적 RUH | GC 목적 RU |
 |---|---|---|
 | PI | victim이 속한 동일 RUH | 그 RUH의 `gc_ru` |
 | II | 마지막 RUH | 마지막 RUH의 `curr_ru` |
 
-`ftl.c:1858–1866`에는 PI도 `curr_ru`를 사용한다는 설명이 남아 있지만, 위 실행문은 `gc_ru`를 사용한다. 본 자료는 실행문을 기준으로 설명한다. 목적지 공간 확보와 RU 소진 처리는 6단계에서 확인한다.
+`ftl.c:1858–1866`(최신 코드에서 삭제됨; 지금 주석 [ftl-fdp.c:1179–1184](../../ftl-fdp.c#L1179)은 PI가 `gc_ru`를 쓴다고 설명)에는 PI도 `curr_ru`를 사용한다는 설명이 남아 있지만, 위 실행문은 `gc_ru`를 사용한다. 본 자료는 실행문을 기준으로 설명한다. 목적지 공간 확보와 RU 소진 처리는 6단계에서 확인한다.
 
 ## 6. FTL 객체와 NVMe 객체의 연결
 
 `FemuRuHandle`과 `NvmeRuHandle`, `FemuReclaimUnit`과 `NvmeReclaimUnit`은 서로 다른 객체다. 이번에 보는 `Femu*` 객체는 line, write pointer, victim queue 등 FTL 내부 동작을 연결하며, 포인터로 NVMe 측 상태와 연결된다.
-출처: [ftl.c:1135–1148](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1135)
+출처: `ftl.c:1135–1148` (최신 코드: [ftl-fdp.c:186–201](../../ftl-fdp.c#L186) — 동작 변경)
 
 ```c
     new_ru->rgidx = rgidx;
@@ -252,10 +257,12 @@ PI에서는 `dest_ruh->gc_ru`, II에서는 마지막 RUH의 `curr_ru`를 선택�
 
 `new_ru->ruh = eruh`는 새 RU를 FTL 측 RUH에 연결한다. `ru_in_use_cnt++`는 배정 수를 늘린다. 마지막 대입은 NVMe 측 RUH의 RG별 참조를 새 RU에 연결된 `NvmeReclaimUnit`으로 바꾼다.
 
+> ⚠ 최신 코드: `fdp_get_new_ru()`는 NVMe 쪽 `ruh->rus[rgidx]`를 바꾸지 않는다. RU를 활성으로 만드는 호출자가 바꾼다 ([ftl-fdp.c:197–201](../../ftl-fdp.c#L197)).
+
 즉 `eruh->ruh->rus[rgidx]`를 읽을 때는 **FTL RUH → NVMe RUH → NVMe RU**로 따라가야 한다. `eruh->rus[rgidx]`의 FTL RU 참조와 구분해야 한다. 양쪽 포인터가 존재한다는 사실만으로 모든 경로에서 자동 동기화된다고 가정할 수는 없으며, 교체 때의 대입문을 확인해야 한다.
 
 ## 7. `ru_mgmt`: RU의 상태를 관리한다
-출처: [ftl.h:225–235](/root/workspace/FEMU/hw/femu/bbssd/ftl.h:225)
+출처: [ftl.h:413–423](../../ftl.h#L413)
 
 ```c
 typedef struct ru_mgmt {
@@ -271,11 +278,11 @@ typedef struct ru_mgmt {
     int full_ru_cnt;
 ```
 
-RG 수준에서는 `free_ru_list`가 할당 가능한 RU를, `full_ru_list`가 다 채워졌고 모든 페이지가 유효한 RU를 관리한다. 다 채운 RU에 무효 페이지가 있으면 전략에 따라 victim queue에 넣는 실행문이 `ftl.c:1209–1238`에 있다.
+RG 수준에서는 `free_ru_list`가 할당 가능한 RU를, `full_ru_list`가 다 채워졌고 모든 페이지가 유효한 RU를 관리한다. 다 채운 RU에 무효 페이지가 있으면 전략에 따라 victim queue에 넣는 실행문이 [ftl-fdp.c:269–305](../../ftl-fdp.c#L269)에 있다.
 
 현재 쓰는 RU는 free 목록에서 빠져 있으며, 아직 다 채워지지 않았다면 full/victim에 들어가지 않는다. 따라서 `free + full + victim`만 더해서 전체 RU 수와 같다고 기대하면 활성 RU를 놓치게 된다. 상세한 상태 전이는 4~5단계에서 다룬다.
 
-PI RUH에도 별도의 `ru_mgmt`를 생성하는 코드는 `ftl.c:2354–2375`에 있다. RG 전체 후보 관리와 특정 RUH의 후보 관리가 다른 범위이므로, 동일 RU가 두 heap에서 관리될 경우 `pos`와 `ruh_pos`를 분리해야 한다. 모든 GC 전략이 RUH별 큐를 사용한다는 뜻은 아니다.
+PI RUH에도 별도의 `ru_mgmt`를 생성하는 코드는 [ftl-fdp.c:1956–1977](../../ftl-fdp.c#L1956)에 있다. RG 전체 후보 관리와 특정 RUH의 후보 관리가 다른 범위이므로, 동일 RU가 두 heap에서 관리될 경우 `pos`와 `ruh_pos`를 분리해야 한다. 모든 GC 전략이 RUH별 큐를 사용한다는 뜻은 아니다.
 
 ## 8. 작은 예시로 연결하기
 
@@ -289,7 +296,7 @@ PI RUH에도 별도의 `ru_mgmt`를 생성하는 코드는 `ftl.c:2354–2375`�
 | RU 3 | `ruh = RUH 1`, `lines[0] = line 3`, 자기 `ssd_wptr` 보유 |
 | line 2 | `my_ru = RU 2` |
 
-호스트 쓰기가 배치 해석을 거쳐 RUH 0을 선택하면, `curr_ru`인 RU 2를 따라가고 그 RU의 `ssd_wptr`로 PPA를 얻는다. 페이지가 유효해지면 line과 RU의 카운터뿐 아니라 `ru->ruh->ruh_live_pages_cnt`도 증가한다(`ftl.c:1309–1324`).
+호스트 쓰기가 배치 해석을 거쳐 RUH 0을 선택하면, `curr_ru`인 RU 2를 따라가고 그 RU의 `ssd_wptr`로 PPA를 얻는다. 페이지가 유효해지면 line과 RU의 카운터뿐 아니라 `ru->ruh->ruh_live_pages_cnt`도 증가한다([ftl-fdp.c:409–424](../../ftl-fdp.c#L409)).
 
 RU 2가 다 차서 새 RU 4를 배정받으면 RUH 0의 현재 쓰기 참조가 RU 4로 바뀐다. RU 2에 남아 있는 데이터까지 RU 4로 즉시 옮긴다는 뜻은 아니다. RU 2는 full 또는 victim 상태로 남고, RU 2의 `ruh`를 통해 기존 RUH 소속을 추적한다.
 

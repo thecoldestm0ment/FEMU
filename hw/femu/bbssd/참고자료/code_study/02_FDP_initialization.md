@@ -1,5 +1,8 @@
 # 2단계 — FDP 초기화와 공간 구성
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 동작은 [15_fdp_code_map.md](15_fdp_code_map.md)의 "예전 노트 이후 바뀐 점" 참고. 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 기준: `master`, 커밋 `e2d5413ff`. 현재 로컬 코드와 인용을 대조했다. 아래 수치 예시는 설명용이며 실험 결과가 아니다.
 
 이전 자료: [1단계 — 객체 관계와 쓰기 포인터](01_FDP_objects_and_pointers.md) · 다음 자료: [3단계 — 배치 정보 해석](03_FDP_placement_resolution.md)
@@ -26,7 +29,7 @@ flowchart TD
 
 ## 2. FDP 초기화 진입 조건과 선행 상태
 
-출처: [bbssd/ftl.c:506–522](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:506)
+출처: [ftl.c:141–197](../../ftl.c#L141)
 
 ```c
     /* initialize all the lines */
@@ -50,15 +53,15 @@ flowchart TD
 
 `ssd_init_lines()`가 먼저 끝나므로 FDP 초기화는 이미 생성된 line들을 사용할 수 있다. 활성화 조건은 subsystem이 존재하고 `subsys->params.fdp.enabled`가 참인 것이다. 여기서 설정한 `ssd->fdp_enabled`는 이후 쓰기 분기에도 쓰인다.
 
-호출 순서는 `ssd_init_fdp_params()` → `femu_fdp_ssd_init_reclaim_group()` → `femu_fdp_ssd_init_ru_handles()`다. FTL thread 생성은 이 세 단계 뒤인 `ftl.c:528–529`에 있다.
+호출 순서는 `ssd_init_fdp_params()` → `femu_fdp_ssd_init_reclaim_group()` → `femu_fdp_ssd_init_ru_handles()`다. FTL thread 생성은 이 세 단계 뒤인 [femu.c:2651–2656](../../../femu.c#L2651)에 있다.
 
 `fdp_debug`는 환경변수의 **존재 여부**로 설정된다. 따라서 `FEMU_FDP_DEBUG=0`도 변수가 존재하면 이 식에서는 참이다. 개별 trace가 실제로 살아 있는지는 호출부까지 확인해야 한다.
 
-**선행 조건:** 이 경로는 NVMe 측 `endgrp->fdp.rus`, `endgrp->fdp.ruhs`, namespace의 `fdp.phs`가 준비되어 있다고 기대한다. NVMe RU/RUH 배열 생성은 `femu.c:104–109`, PH 매핑 생성은 `femu.c:214–235`에서 확인할 수 있다. 여기서는 그 객체를 FTL 객체와 연결하는 부분에 집중한다.
+**선행 조건:** 이 경로는 NVMe 측 `endgrp->fdp.rus`, `endgrp->fdp.ruhs`, namespace의 `fdp.phs`가 준비되어 있다고 기대한다. NVMe RU/RUH 배열 생성은 [femu.c:159–164](../../../femu.c#L159), PH 매핑 생성은 [femu.c:359–380](../../../femu.c#L359)에서 확인할 수 있다. 여기서는 그 객체를 FTL 객체와 연결하는 부분에 집중한다.
 
 ## 3. geometry: RU 하나의 크기와 총수를 정한다
 
-출처: [bbssd/ftl.c:2391–2409](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2391)
+출처: [ftl-fdp.c:1999–2017](../../ftl-fdp.c#L1999)
 
 ```c
     uint64_t runs = endgrp->fdp.runs;
@@ -89,13 +92,13 @@ flowchart TD
 - NVMe 측 `nru`가 0이면 그 필드에 계산값을 기록한다.
 - NVMe 측 `nru`가 양수이며 계산값보다 작으면, FTL 측 `total_ru_cnt`를 그 값으로 줄인다.
 
-여기서 `runs`를 읽지만 `lines_per_ru` 계산에 사용하지 않는다. 따라서 `fdp.runs`를 바꾸는 것과 FTL의 물리적인 RU 크기를 바꾸는 것을 동일하게 해석하면 안 된다. `runs`는 NVMe 측 `ruamw` 초기값 계산에도 쓰인다(`femu.c:223`); 그 단위와 실제 감소 방식은 통계 단원에서 다시 다룬다.
+여기서 `runs`를 읽지만 `lines_per_ru` 계산에 사용하지 않는다. 따라서 `fdp.runs`를 바꾸는 것과 FTL의 물리적인 RU 크기를 바꾸는 것을 동일하게 해석하면 안 된다. `runs`는 NVMe 측 `ruamw` 초기값 계산에도 쓰인다([femu.c:368](../../../femu.c#L368)); 그 단위와 실제 감소 방식은 통계 단원에서 다시 다룬다.
 
-`nru == 0` 분기는 숫자 필드를 갱신할 뿐 이 함수 안에서 NVMe RU 배열을 새로 할당하지 않는다. 또한 앞선 NVMe 초기화는 `nruh > nru`를 거부한다(`femu.c:85–92`). 따라서 이 분기만 보고 `nru=0` 설정이 전체 초기화 경로에서 지원된다고 결론 내리면 안 된다.
+`nru == 0` 분기는 숫자 필드를 갱신할 뿐 이 함수 안에서 NVMe RU 배열을 새로 할당하지 않는다. 또한 앞선 NVMe 초기화는 `nruh > nru`를 거부한다([femu.c:129–136](../../../femu.c#L129)). 따라서 이 분기만 보고 `nru=0` 설정이 전체 초기화 경로에서 지원된다고 결론 내리면 안 된다.
 
 ## 4. RG 배열과 RU 관리 객체를 만든다
 
-출처: [bbssd/ftl.c:2254–2272](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2254)
+출처: [ftl-fdp.c:1827–1846](../../ftl-fdp.c#L1827)
 
 ```c
     uint64_t rgs = subsys->params.fdp.nrg;
@@ -134,7 +137,7 @@ flowchart TD
 
 ### 4.1 관리 객체의 기본 상태
 
-출처: [bbssd/ftl.c:2182–2195](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2182)
+출처: [ftl-fdp.c:1739–1753](../../ftl-fdp.c#L1739)
 
 ```c
     rm->tt_rus = rg->tt_nru;
@@ -155,9 +158,9 @@ flowchart TD
 
 처음에는 카운터상 모든 RU를 free로 두고 victim/full을 0으로 둔다. 이 시점은 초기화 도중이므로 실제 free 목록 등록이 아직 끝난 상태는 아니다. 뒤의 등록 반복문에서 `free_ru_cnt`를 다시 0으로 만들고 RU마다 증가시킨다.
 
-`mgmt_type`의 초기값은 global greedy지만, RG 초기화 후반에 `n->bb_params.gc_strategy`로 덮어쓴다(`ftl.c:2307–2310`). 이 초기값 한 줄만 보고 최종 GC 전략을 판단하면 안 된다.
+`mgmt_type`의 초기값은 global greedy지만, RG 초기화 후반에 `n->bb_params.gc_strategy`로 덮어쓴다([ftl-fdp.c:1884–1887](../../ftl-fdp.c#L1884)). 이 초기값 한 줄만 보고 최종 GC 전략을 판단하면 안 된다.
 
-출처: [bbssd/ftl.c:2197–2207](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2197)
+출처: [ftl-fdp.c:1755–1765](../../ftl-fdp.c#L1755)
 
 ```c
     QTAILQ_INIT(&rm->free_ru_list);
@@ -177,7 +180,7 @@ free/full 목록과 두 victim heap을 준비한다. 두 heap을 만들었다는
 
 ## 5. 각 RU를 NVMe 객체 및 line과 연결한다
 
-출처: [bbssd/ftl.c:2275–2289](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2275)
+출처: [ftl-fdp.c:1850–1864](../../ftl-fdp.c#L1850)
 
 ```c
     /* link NvmeReclaimUnit pointers and init each SSD-level RU */
@@ -203,7 +206,7 @@ free/full 목록과 두 victim heap을 준비한다. 두 heap을 만들었다는
 
 ### 5.1 RU 내부의 초기 상태
 
-출처: [bbssd/ftl.c:2220–2227](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2220)
+출처: [ftl-fdp.c:1784–1791](../../ftl-fdp.c#L1784)
 
 ```c
     femu_ru->n_lines = spp->lines_per_ru;
@@ -218,7 +221,7 @@ free/full 목록과 두 victim heap을 준비한다. 두 heap을 만들었다는
 
 RU 내부에 write pointer 메모리를 만들고 `vpc`, `ipc`, heap 위치를 0으로 둔다. `npages`는 line 수와 line당 페이지 수의 곱이다. `next_line_index = 1`은 첫 line을 현재 line으로 사용하고 그 다음 인덱스를 준비하는 상태다.
 
-출처: [bbssd/ftl.c:2230–2245](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2230)
+출처: [ftl-fdp.c:1794–1809](../../ftl-fdp.c#L1794)
 
 ```c
     femu_ru->lines = g_malloc0(femu_ru->n_lines * sizeof(struct line *));
@@ -241,11 +244,11 @@ RU 내부에 write pointer 메모리를 만들고 `vpc`, `ipc`, heap 위치를 0
 
 기존 free line 목록에서 꺼낸 line을 RU에 고정적으로 연결하고, `line->my_ru`로 역방향 연결을 만든다. write pointer는 첫 line의 `(ch=0, lun=0, pg=0, pl=0)`에서 시작하며 `blk`는 그 line의 ID다.
 
-**상태 변화의 의미:** line을 free line 목록에서 꺼냈다고 해서 호스트 데이터가 기록된 것은 아니다. 아직 쓰지 않은 line도 RU 구성에 배정되면서 line 목록에서 빠진다. `get_next_free_line()`의 감소는 `ftl.c:273–274`에서 확인된다. FDP에서 쓰기 공간 부족 여부를 볼 때는 RG의 `free_ru_cnt`를 읽어야 한다.
+**상태 변화의 의미:** line을 free line 목록에서 꺼냈다고 해서 호스트 데이터가 기록된 것은 아니다. 아직 쓰지 않은 line도 RU 구성에 배정되면서 line 목록에서 빠진다. `get_next_free_line()`의 감소는 [ftl-line-gc.c:169–170](../../ftl-line-gc.c#L169)에서 확인된다. FDP에서 쓰기 공간 부족 여부를 볼 때는 RG의 `free_ru_cnt`를 읽어야 한다.
 
 ## 6. GC 임계값을 free RU 개수로 변환한다
 
-출처: [bbssd/ftl.c:2290–2299](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2290)
+출처: [ftl-fdp.c:1866–1875](../../ftl-fdp.c#L1866)
 
 ```c
             rg->ru_mgmt->gc_thres_pcent =
@@ -262,7 +265,7 @@ RU 내부에 write pointer 메모리를 만들고 `vpc`, `ipc`, heap 위치를 0
 
 입력 퍼센트를 비율로 바꾼 뒤 그 보수에 RG의 RU 수를 곱한다. 코드상 비교는 다음과 같다.
 
-출처: [bbssd/ftl.c:55–64](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:55)
+출처: [ftl-internal.h:267–276](../../ftl-internal.h#L267)
 
 ```c
 static inline int16_t should_gc_fdp_style(struct ssd *ssd)
@@ -277,15 +280,17 @@ static inline int16_t should_gc_fdp_style(struct ssd *ssd)
 }
 ```
 
-즉 일반 GC 판단은 `free_ru_cnt <= gc_thres_rus`다. 높은 임계값을 사용하는 판단도 동일하게 `free_ru_cnt <= gc_thres_rus_high`로 비교한다(`ftl.c:66–74`). 함수 반환값은 불리언이 아니라 **조건을 처음 만족한 RG 인덱스**, 또는 필요 없음을 뜻하는 `-1`이다.
+즉 일반 GC 판단은 `free_ru_cnt <= gc_thres_rus`다. 높은 임계값을 사용하는 판단도 동일하게 `free_ru_cnt <= gc_thres_rus_high`로 비교한다([ftl-internal.h:282–290](../../ftl-internal.h#L282)). 함수 반환값은 불리언이 아니라 **조건을 처음 만족한 RG 인덱스**, 또는 필요 없음을 뜻하는 `-1`이다.
 
 가상 예시로 RG당 RU가 16개이고 입력이 일반 75%, high 88%라면 free 임계값은 각각 4, 1이다. high의 계산값은 `(1 - 0.88) × 16 = 1.92`이며 정수 형변환으로 1이 된다. RU 수가 적으면 이런 정수화의 영향이 크므로 실제 계산 결과를 확인해야 한다.
+
+> ⚠ 최신 코드: `gc_thres_rus_high`는 `bb_fdp_forced_units()`로 계산해, 0으로 내림되면(high < 100) 1로 올린다 ([ftl-fdp.c:1874–1875](../../ftl-fdp.c#L1874), [ftl-geom.c:58–67](../../ftl-geom.c#L58)).
 
 임계값은 공간 부족을 판단하는 기준이다. 어떤 victim을 고를지는 별도의 GC 전략에서 결정된다.
 
 ## 7. namespace의 PH에 대응하는 RUH를 초기화한다
 
-출처: [bbssd/ftl.c:2320–2336](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2320)
+출처: [ftl-fdp.c:1905–1921](../../ftl-fdp.c#L1905)
 
 ```c
     NvmeNamespace *ns = &n->namespaces[0];
@@ -309,11 +314,11 @@ static inline int16_t should_gc_fdp_style(struct ssd *ssd)
 
 FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 namespace의 `nphs`와 `phs`를 따라간다. PH 번호를 그대로 인덱스로 사용하는 대신 `i = *ruhid`로 매핑 결과를 얻는다.
 
-현재 namespace 초기화는 `nphs = nruh`, `phs[i] = i`를 설정한다(`femu.c:214–235`). 따라서 기본 생성 상태에서는 숫자가 같지만, 이 FTL 코드는 매핑 테이블을 통해 RUH를 선택하도록 작성되어 있다. PH와 RUH ID의 구분은 3단계에서 자세히 다룬다.
+현재 namespace 초기화는 `nphs = nruh`, `phs[i] = i`를 설정한다([femu.c:359–380](../../../femu.c#L359)). 따라서 기본 생성 상태에서는 숫자가 같지만, 이 FTL 코드는 매핑 테이블을 통해 RUH를 선택하도록 작성되어 있다. PH와 RUH ID의 구분은 3단계에서 자세히 다룬다.
 
 `ruh_type`도 FTL이 독립적으로 결정하는 것이 아니라 NVMe RUH의 `ruht`를 복사한다. 현재 NVMe 초기화 실행문은 다음과 같다.
 
-출처: [femu.c:117–124](/root/workspace/FEMU/hw/femu/femu.c:117)
+출처: [femu.c:172–179](../../../femu.c#L172)
 
 ```c
         uint8_t ruht = NVME_RUHT_PERSISTENTLY_ISOLATED;
@@ -330,7 +335,7 @@ FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 name
 
 ### 7.1 각 RUH에 RG마다 첫 RU를 배정한다
 
-출처: [bbssd/ftl.c:2344–2352](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2344)
+출처: `bbssd/ftl.c:2344–2352` (최신 코드: [ftl-fdp.c:1930–1950](../../ftl-fdp.c#L1930) — 동작 변경)
 
 ```c
         /* allocate per-RG RU pointer array */
@@ -346,9 +351,11 @@ FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 name
 
 각 RG마다 `fdp_get_new_ru()`로 RU 하나를 받는다. FTL의 `rus[j]`, NVMe 측 `ruh->rus[j]`, 단일 `curr_ru`가 연결된다.
 
+> ⚠ 최신 코드: `curr_ru`는 반복문 뒤에서 `rus[0]`(RG 0의 RU)로 정한다 ([ftl-fdp.c:1950](../../ftl-fdp.c#L1950)).
+
 할당 함수 안에서 실제로 중요한 상태 변화는 다음과 같다.
 
-출처: [bbssd/ftl.c:1130–1144](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:1130)
+출처: [ftl-fdp.c:181–195](../../ftl-fdp.c#L181)
 
 ```c
     new_ru = get_next_free_ru(ssd, rg);
@@ -368,7 +375,7 @@ FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 name
     eruh->ru_in_use_cnt++;
 ```
 
-`get_next_free_ru()`는 RG free 목록에서 RU를 빼고 `free_ru_cnt`를 줄인다(`ftl.c:1093–1100`). 그 RU에 RUH를 연결하고 쓰기 좌표를 초기화하며 `ru_in_use_cnt`를 늘린다.
+`get_next_free_ru()`는 RG free 목록에서 RU를 빼고 `free_ru_cnt`를 줄인다([ftl-fdp.c:135–142](../../ftl-fdp.c#L135)). 그 RU에 RUH를 연결하고 쓰기 좌표를 초기화하며 `ru_in_use_cnt`를 늘린다.
 
 따라서 **호스트 쓰기가 한 건도 없어도 RUH 초기화만으로 free RU가 감소한다.** 새로 배정된 RU는 비어 있지만 이미 특정 RUH의 활성 쓰기 공간이다.
 
@@ -376,7 +383,7 @@ FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 name
 
 ### 7.2 PI 관리 객체 생성과 GC 공간 배정은 다르다
 
-출처: [bbssd/ftl.c:2354–2362](/root/workspace/FEMU/hw/femu/bbssd/ftl.c:2354)
+출처: [ftl-fdp.c:1956–1964](../../ftl-fdp.c#L1956)
 
 ```c
         /* PI type RUHs get their own ru_mgmt for per-RUH victim queues */
@@ -390,9 +397,9 @@ FTL RUH 배열은 `nruh` 크기로 만들지만, 초기화 반복문은 첫 name
             QTAILQ_INIT(&ssd->ruhs[i].ru_mgmt->full_ru_list);
 ```
 
-PI RUH에 별도 관리 메모리를 만들며, 이어지는 `ftl.c:2367–2375`에서 `ruh_pos`를 사용하는 heap을 만든다. 하지만 이 초기화 함수에는 `gc_ru`에 RU를 할당하는 대입이 없다. `g_malloc0()`로 만든 RUH의 `gc_ru`는 초기 상태에서 `NULL`이다.
+PI RUH에 별도 관리 메모리를 만들며, 이어지는 [ftl-fdp.c:1969–1977](../../ftl-fdp.c#L1969)에서 `ruh_pos`를 사용하는 heap을 만든다. 하지만 이 초기화 함수에는 `gc_ru`에 RU를 할당하는 대입이 없다. `g_malloc0()`로 만든 RUH의 `gc_ru`는 초기 상태에서 `NULL`이다.
 
-PI의 GC 공간은 나중에 `check_gc_ruh_available()`에서 `gc_ru == NULL`일 때 `fdp_get_new_ru()`로 확보한다(`ftl.c:1481–1488`). 그러므로 RUH마다 호스트용과 GC용 RU 두 개가 부팅 때부터 배정된다고 계산하면 틀린다.
+PI의 GC 공간은 나중에 `check_gc_ruh_available()`에서 `gc_ru == NULL`일 때 `fdp_get_new_ru()`로 확보한다(`ftl.c:1481–1488`, 최신 코드: [ftl-fdp.c:606–611](../../ftl-fdp.c#L606) `fdp_gc_frontier()` — 동작 변경). 그러므로 RUH마다 호스트용과 GC용 RU 두 개가 부팅 때부터 배정된다고 계산하면 틀린다.
 
 ## 8. 초기화 전후를 숫자로 추적한다
 
@@ -442,5 +449,7 @@ RG별 초기 free RU 수
    아니다. line이 free RU를 구성하는 데 들어갔을 수 있다. RG의 free RU 수와 활성 RU의 잔여 공간을 구분한다.
 6. **다중 RG에서 `curr_ru`는 초기화 후 어느 RU를 가리키는가?**  
    해당 RUH의 RG 반복문이 마지막으로 배정한 RU를 가리킨다. RG별 배열이 존재하는 것만으로 모든 쓰기 경로의 일관성을 보장하지는 않는다.
+
+   > ⚠ 최신 코드: RG 0의 RU(`rus[0]`)를 가리킨다 ([ftl-fdp.c:1950](../../ftl-fdp.c#L1950)).
 
 다음 단원에서는 준비된 RUH를 호스트 쓰기 요청의 PID가 어떻게 선택하는지 추적한다.

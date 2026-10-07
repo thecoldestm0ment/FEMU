@@ -1,5 +1,9 @@
 # FEMU bbssd 코드 분석 예상 꼬리 질문과 답변
 
+> 이 노트는 예전 단일 `ftl.c`(커밋 `e2d5413ff`) 기준으로 작성됐다. 코드 참조는 최신 코드 위치로 갱신했다.
+> 이후 바뀐 구조와 동작은 [11_core_structures_and_dispatch.md](11_core_structures_and_dispatch.md)(구조·dispatch), [12_datapath_read_write_trim.md](12_datapath_read_write_trim.md)(read/write/trim), [13_line_gc_geometry_media.md](13_line_gc_geometry_media.md)(line·GC·media), [14_mapping_schemes.md](14_mapping_schemes.md)(mapping) 참고.
+> 본문의 `⚠ 최신 코드:` 줄은 지금 코드와 다른 부분을 표시한다.
+
 대상 발표: `FEMU_bbssd_code_analysis_final.html`  
 청중: SSD / FTL / 시스템 소프트웨어 연구자  
 사용법: 발표 후 질문에는 먼저 "짧은 답변"을 말하고, 필요하면 "보충"을 이어서 설명한다.
@@ -11,6 +15,8 @@
 
 **보충:**  
 `bb_io_cmd()`는 read/write opcode를 받아 `nvme_rw()` 쪽으로 넘긴다. 이후 request는 poller와 `to_ftl` queue를 거쳐 FTL worker thread로 전달된다. 따라서 SSD 내부 동작을 분석하려면 `to_ftl` dequeue 이후 `ftl_thread()`의 opcode dispatch를 보는 것이 더 직접적이다.
+
+> ⚠ 최신 코드: `ftl_thread()`는 `femu.c`의 `femu_ftl_thread()`와 `ftl.c`의 `bb_ftl_process_req()`(opcode 분기·background GC)로 바뀌었다 ([11](11_core_structures_and_dispatch.md) §6).
 
 ## 2. `to_ftl` queue는 코드 구조상 어떤 의미인가?
 
@@ -35,6 +41,8 @@ Read/write는 Host LBA를 LPN으로 바꾼 뒤 `maptbl[lpn]`로 최신 PPA를 �
 
 **보충:**  
 `ssd_read()`와 `ssd_write()` 모두 LBA를 `secs_per_pg`로 나누어 LPN 범위를 계산하고, 각 LPN마다 `maptbl` entry를 조회하거나 갱신한다. 따라서 host-visible logical page 단위로 PPA가 관리된다. 다만 erase와 GC는 NAND 특성상 block/line 단위로 수행된다.
+
+> ⚠ 최신 코드: LPN 범위는 `ssd_lpn_range()`가 계산하고, `mapping=` 속성으로 page(기본)·dftl·hybrid·fast scheme을 고를 수 있다 ([14](14_mapping_schemes.md)).
 
 ## 5. 여기서 line은 일반적인 NAND block과 같은가?
 
@@ -68,6 +76,8 @@ background GC는 request 처리 후 free line이 낮을 때 수행되고, foregr
 **보충:**  
 `should_gc()`는 일반 threshold를 보고, `should_gc_high()`는 더 높은 압박 상태를 본다. `ssd_write()` 앞부분에는 `should_gc_high()`가 true인 동안 `do_gc(..., true)`를 호출하는 루프가 있다. 반면 `ftl_thread()` 끝부분의 background GC는 request 처리 후 `should_gc()`를 보고 한 번 수행된다.
 
+> ⚠ 최신 코드: background GC는 `bb_ftl_process_req()` 끝(완료를 poller에 넘기기 전)에서 돌고, direct write 경로는 LPN마다 `ssd_gc_until_clear()`로 foreground GC를 한다 ([ftl.c:673–689](../../ftl.c#L673), [12](12_datapath_read_write_trim.md) §4).
+
 ## 9. GC가 write amplification을 만드는 위치는 어디인가?
 
 **짧은 답변:**  
@@ -100,6 +110,8 @@ read/write/erase command에 따라 해당 LUN의 `next_lun_avail_time`을 갱신
 **보충:**  
 `ssd_advance_status()` 안에 channel transfer timing을 고려하는 코드가 `#if 0` 블록으로 존재한다. 현재 활성 경로에서는 read/write/erase 모두 LUN의 `next_lun_avail_time`을 중심으로 latency를 계산한다. 따라서 발표 범위에서는 channel bandwidth 모델보다 LUN-level timing model로 설명하는 것이 맞다.
 
+> ⚠ 최신 코드: `#if 0` 블록은 없어졌다. bus 단계 지연(`ch_xfer_lat` 등)이 0이 아니면 staged channel 모델이 켜진다(기본 0이면 지금도 LUN 중심) ([ftl-media.c:192–193](../../ftl-media.c#L192), [13](13_line_gc_geometry_media.md) §8).
+
 ## 13. write pointer는 어떤 순서로 전진하나?
 
 **짧은 답변:**  
@@ -107,6 +119,8 @@ channel을 먼저 돌고, channel이 끝나면 LUN, LUN이 끝나면 page를 증
 
 **보충:**  
 `ssd_advance_write_pointer()`는 `ch`를 증가시키고, 모든 channel을 돌면 `lun`을 증가시킨다. 모든 LUN을 돌면 page를 증가시킨다. block 안의 모든 page를 다 쓰면 현재 line을 full 또는 victim으로 분류하고, free line list에서 다음 line을 가져온다.
+
+> ⚠ 최신 코드: LUN 다음에 plane을 돌고 page를 올린다(ch → LUN → plane → page) ([ftl-internal.h:55–81](../../ftl-internal.h#L55)).
 
 ## 14. full line과 victim line의 차이는?
 
@@ -147,6 +161,8 @@ FEMU bbssd는 실제 SSD firmware 전체라기보다 FTL state transition과 NAN
 
 **보충:**  
 실제 SSD에는 DRAM cache, wear leveling, bad block management, read disturb, program interference, multi-plane command, scheduler 등 더 많은 요소가 있다. bbssd 기본 경로는 page-level mapping, line-level GC, LUN-level latency를 중심으로 한 교육적이고 실험 가능한 모델로 보는 것이 적절하다.
+
+> ⚠ 최신 코드: DRAM write buffer·read cache, read disturb/retention reclaim, multi-plane program/read 등이 옵션으로 추가됐다(기본은 꺼짐) ([12](12_datapath_read_write_trim.md), [13](13_line_gc_geometry_media.md)).
 
 ## 19. 이 분석에서 FDP 경로를 제외한 이유는?
 
