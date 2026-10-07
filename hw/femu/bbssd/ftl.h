@@ -3,7 +3,23 @@
 
 #include "../nvme.h"
 #include "../nand/nand-media.h"
+/*
+ * [ftl.h] bbssd FTL 공용 헤더: 핵심 자료구조와 외부 공개 API 선언.
+ * - NAND 물리 계층: channel → LUN(die) → plane → block → page
+ *   (struct ssd_channel / nand_lun / nand_plane / nand_block / nand_page)
+ * - 물리 주소 struct ppa, GC 단위 struct line, struct write_pointer
+ * - FTL 전체 상태 struct ssd (파라미터는 struct ssdparams)
+ * - FDP 구조체(RG/RU/RUH)와 mapping scheme·GC policy vtable
+ * 포함하는 곳: bbssd의 모든 .c, femu.c, nvme-admin.c, nvme-streams.c,
+ *   femu-query.c, 그리고 이 FTL을 재사용하는 csd/, kvssd/, cxlssd/.
+ * 내부 전용 inline·함수 선언은 ftl-internal.h에 있다.
+ * 자세한 설명: 참고자료/code_study/11_core_structures_and_dispatch.md
+ */
 
+/*
+ * 비트가 전부 1인 "없음" 표시.
+ * maptbl 초기값 = UNMAPPED_PPA, rmap 초기값 = INVALID_LPN.
+ */
 #define INVALID_PPA     (~(0ULL))
 #define INVALID_LPN     (~(0ULL))
 #define UNMAPPED_PPA    (~(0ULL))
@@ -13,6 +29,11 @@ typedef struct FemuReclaimGroup FemuReclaimGroup;
 typedef struct FemuRuHandle FemuRuHandle;
 typedef struct FemuReclaimUnit FemuReclaimUnit;
 
+/*
+ * nand_cmd.cmd 값(NAND_READ/WRITE/ERASE)과 기본 NAND 지연(ns).
+ * *_LATENCY는 flip 명령 FEMU_ENABLE_DELAY_EMU가 되돌리는 값이고(bb.c),
+ * 평소 지연은 device property(pg_rd_lat 등, 기본값도 같은 값)에서 온다.
+ */
 enum {
     NAND_READ =  0,
     NAND_WRITE = 1,
@@ -29,12 +50,18 @@ enum {
     FEMU_ECC_MAX_TIERS   = 4,
 };
 
+/* nand_cmd.type: 누가 낸 NAND I/O인가. MAP_IO read는 block read_cnt에 안 셈 */
 enum {
     USER_IO = 0,
     GC_IO = 1,
     MAP_IO = 2,     /* translation-page traffic of the DFTL cache */
 };
 
+/*
+ * page 상태: PG_FREE(erase됨, program 가능) → PG_VALID(최신 데이터)
+ * → PG_INVALID(덮어쓰기/trim으로 무효, GC가 erase할 때까지 남음).
+ * SEC_* 값은 현재 코드에서 쓰이지 않는다.
+ */
 enum {
     SEC_FREE = 0,
     SEC_INVALID = 1,
@@ -45,6 +72,7 @@ enum {
     PG_VALID = 2
 };
 
+/* FEMU 전용 admin 명령 flip(opcode 0xef)의 cdw10 값. bb.c bb_flip()이 처리 */
 enum {
     FEMU_ENABLE_GC_DELAY = 1,
     FEMU_DISABLE_GC_DELAY = 2,
@@ -58,6 +86,10 @@ enum {
 };
 
 
+/*
+ * struct ppa 각 좌표의 bit 폭. 한 축의 최대 개수는 1 << BITS이고,
+ * bb_check_geometry()(ftl-geom.c)가 property 값이 이를 넘지 않는지 검사한다.
+ */
 #define BLK_BITS    (16)
 #define PG_BITS     (16)
 #define SEC_BITS    (8)
@@ -66,6 +98,12 @@ enum {
 #define CH_BITS     (12)
 
 /* describe a physical page addr */
+/*
+ * 64bit 물리 page 주소. g.* bit-field로 좌표를 읽고, ppa(정수)로 한 번에
+ * 비교/대입한다. GCC x86(little-endian) 기준 LSB부터의 배치:
+ *   blk[15:0] pg[31:16] sec[39:32] pl[43:40] lun[50:44] ch[62:51] rsv[63]
+ * blk 번호 == line id. 매핑이 page 단위라 sec/rsv는 0으로 남는다.
+ */
 struct ppa {
     union {
         struct {
@@ -86,6 +124,10 @@ struct nand_page {
     int status;
 };
 
+/*
+ * block: page 배열 + 통계. vpc/ipc는 mark_page_valid()/mark_page_invalid()가
+ * 갱신하고, erase(mark_block_free()) 때 0이 되며 erase_cnt는 1 증가한다.
+ */
 struct nand_block {
     struct nand_page *pg;
     int npgs;
@@ -98,6 +140,7 @@ struct nand_block {
      * read_reclaim_limit; the largest value is also reported in log page C0h.
      */
     uint64_t read_cnt;
+    /* wp는 0으로 초기화만 됨. 실제 쓰기 위치는 struct write_pointer가 관리 */
     int wp; /* current write pointer */
 };
 
@@ -110,12 +153,23 @@ struct nand_plane {
  * Pages of one LUN waiting to be charged as a single multi-plane command:
  * the same block and page on distinct planes, all requested at stime.
  */
+/*
+ * mp_program/mp_read용 대기열: ftl-datapath.c의 ssd_mp_add()가 모으고,
+ * plane 수만큼 차거나 ssd_mp_flush() 때 한 번의 multi-plane 명령으로 과금.
+ */
 struct ssd_mp_batch {
     struct ppa ppa[1 << PL_BITS];
     int n;
     uint64_t stime;
 };
 
+/*
+ * LUN(die): NAND 명령이 직렬화되는 단위. next_lun_avail_time은 이 LUN이
+ * 다음 명령을 시작할 수 있는 시각(ns)으로, 지연 모델의 핵심이다:
+ *   완료 시각 = max(요청 stime, next_lun_avail_time) + NAND 지연
+ *   (nand/nand-media.c nand_media_op()). busy는 초기화만, gc_endtime은
+ *   GC가 기록만 하고 읽는 곳이 없다.
+ */
 struct nand_lun {
     struct nand_plane *pl;
     int npls;
@@ -126,6 +180,11 @@ struct nand_lun {
     struct ssd_mp_batch mp_rd;    /* reads not yet charged (mp_read) */
 };
 
+/*
+ * channel: LUN 배열을 가진다. next_ch_avail_time은 bus phase 지연
+ * (cmd_addr_lat/pg_xfer_lat/ch_xfer_lat/status_lat)이 켜진 staged 모델에서만
+ * 쓰인다(ftl-media.c). busy·gc_endtime은 실제로 쓰이지 않는다.
+ */
 struct ssd_channel {
     struct nand_lun *lun;
     int nluns;
@@ -134,6 +193,13 @@ struct ssd_channel {
     uint64_t gc_endtime;
 };
 
+/*
+ * SSD geometry·지연·GC 임계값 (ssd->sp). ssd_init_params()(ftl-geom.c)가
+ * n->bb_params(device property)에서 복사하고 "calculated values"는 곱으로
+ * 유도한다. 용량 = nchs × luns_per_ch × pls_per_lun × blks_per_pl
+ *                 × pgs_per_blk × secs_per_pg × secsz
+ * 기본값(femu.c): 8ch × 8LUN × 1pl × 256blk × 256pg × 8sec × 512B = 16GiB
+ */
 struct ssdparams {
     int secsz;        /* sector size in bytes */
     int secs_per_pg;  /* # of sectors per page */
@@ -143,6 +209,7 @@ struct ssdparams {
     int luns_per_ch;  /* # of LUNs per channel */
     int nchs;         /* # of channels in the SSD */
 
+    /* 기본(flat) NAND 지연. bb_nand_media_init()이 media 설정으로 복사한다 */
     int pg_rd_lat;    /* NAND page read latency in nanoseconds */
     int pg_wr_lat;    /* NAND page program latency in nanoseconds */
     int blk_er_lat;   /* NAND block erase latency in nanoseconds */
@@ -168,6 +235,12 @@ struct ssdparams {
     bool mp_program;  /* multi-plane programs: mp_program set and pls_per_lun > 1 */
     bool mp_read;     /* multi-plane reads: mp_read set and pls_per_lun > 1 */
 
+    /*
+     * GC 임계값(pcent는 0~1 비율로 저장). free line 수가
+     *   ≤ gc_thres_lines      → 요청 처리 후 background GC (should_gc)
+     *   ≤ gc_thres_lines_high → 쓰기 전에 강제 GC 반복 (should_gc_high)
+     * enable_gc_delay: GC의 NAND 시간을 LUN timeline에 반영할지(기본 true)
+     */
     double gc_thres_pcent;
     int gc_thres_lines;
     double gc_thres_pcent_high;
@@ -190,6 +263,7 @@ struct ssdparams {
     int blks_per_ch;  /* # of blocks per channel */
     int tt_blks;      /* total # of blocks in the SSD */
 
+    /* line(superblock) 크기. tt_lines == blks_per_pl (block 번호 = line id) */
     int secs_per_line;
     int pgs_per_line;
     int blks_per_line;
@@ -210,6 +284,7 @@ struct ssdparams {
     int buffer_size;
     double buffer_thres_pcent;
 
+    /* 아래 카운터는 nvme_collect_media_stats()(nvme-admin.c)가 접근자로 수집 */
     /* buffer/cache effectiveness; 64-bit, a long run overflows an int */
     uint64_t read_hit_cnt;
     uint64_t read_cnt;
@@ -217,16 +292,29 @@ struct ssdparams {
     uint64_t write_cnt;
 
     /* FDP: reclaim unit geometry */
+    /*
+     * ssd_init_fdp_params()가 설정: lines_per_ru = 1 고정,
+     * total_ru_cnt = tt_lines (endgrp의 nru가 더 작으면 nru)
+     */
     int lines_per_ru;
     int total_ru_cnt;
 };
 
+/*
+ * line: 모든 channel·LUN·plane에서 같은 block 번호를 묶은 superblock.
+ * 쓰기 할당과 GC의 단위다. 수명 주기(ftl-line-gc.c):
+ *   free_line_list → write pointer가 채움(curline)
+ *   → 다 차면 vpc == pgs_per_line이면 full_line_list, 아니면 victim_line_pq
+ *   → GC가 valid page를 옮기고 erase → 다시 free_line_list
+ * full line은 page 하나가 invalid 되는 순간 victim_line_pq로 옮겨진다.
+ */
 typedef struct line {
     int id;  /* line id, the same as corresponding block id */
     int ipc; /* invalid page count in this line */
     int vpc; /* valid page count in this line */
     QTAILQ_ENTRY(line) entry; /* in either {free,victim,full} list */
     /* position in the priority queue for victim lines */
+    /* pos == 0이면 pqueue 밖에 있다는 뜻(heap index는 1부터) */
     size_t                  pos;
     /* FDP: owning reclaim unit (NULL in non-FDP mode) */
     FemuReclaimUnit *my_ru;
@@ -234,12 +322,19 @@ typedef struct line {
     uint64_t close_time;
     /* order in which lines filled; the FIFO policy's key */
     uint64_t close_seq;
+    /* Streams로 채운 line의 stream tag(0=일반). GC가 같은 stream끼리 이동 */
     uint64_t stream_tag;
     /* set while the line is being rewritten, so it stays out of the lists */
     bool reclaiming;
 } line;
 
 /* wp: record next write addr */
+/*
+ * curline 안에서 다음에 program할 page 좌표. ssd_wp_step()이
+ * ch → lun → pl → pg 순으로 전진(channel 우선 striping)하므로 연속된
+ * page가 서로 다른 channel/LUN에 흩어져 병렬로 처리된다.
+ * blk == curline->id. curline == NULL이면 free line이 없어 쓸 곳이 없다.
+ */
 struct write_pointer {
     struct line *curline;
     int ch;
@@ -249,6 +344,10 @@ struct write_pointer {
     int pl;
 };
 
+/*
+ * line 목록 관리. free는 QTAILQ, victim은 pqueue(기본: vpc 최소가 top
+ * = greedy, fifo policy면 close_seq 순), full은 모든 page가 valid인 line.
+ */
 struct line_mgmt {
     struct line *lines;
     /* free line list, we only need to maintain a list of blk numbers */
@@ -263,6 +362,11 @@ struct line_mgmt {
     uint64_t next_close_seq;
 };
 
+/*
+ * DRAM write buffer 항목(LPN 하나). ssd->write_buffer에 LRU 순으로 달리고
+ * ssd->wb_tree(GTree)로 LPN을 찾는다. undo/lba_state는 power_loss 모델이
+ * 되돌리기용으로 보관하는 원래 page 내용과 LBA별 상태(ftl-datapath.c).
+ */
 typedef struct buffer_entry {
     uint64_t lpn;
     uint8_t *undo;
@@ -270,6 +374,10 @@ typedef struct buffer_entry {
     QTAILQ_ENTRY(buffer_entry) b_entry;
 } buffer_entry;
 
+/*
+ * ssd_advance_status()에 넘기는 NAND 명령. type=USER_IO/GC_IO/MAP_IO,
+ * cmd=NAND_READ/WRITE/ERASE, stime=시작 시각(ns, 0이면 현재 시각).
+ */
 struct nand_cmd {
     int type;
     int cmd;
@@ -279,6 +387,10 @@ struct nand_cmd {
 /* ========== FDP FTL Structures ========== */
 
 /* FDP GC strategy selection */
+/*
+ * gc_strategy property → ru_mgmt->mgmt_type. bb_check_geometry()는
+ * 0(greedy)/1(cost-benefit)/2(random)/4(per-handle)만 허용한다.
+ */
 enum {
     GC_GLOBAL_GREEDY              = 0,
     GC_GLOBAL_CB                  = 1,
@@ -293,6 +405,11 @@ enum {
     GC_BIT_POPULATION             = 15,
 };
 
+/*
+ * RU 풀 관리(line_mgmt의 FDP 버전). RG마다 하나, persistently isolated
+ * RUH는 자기 것을 하나 더 가진다. free/full 리스트 + victim pqueue 2개
+ * (victim_ru_pq: vpc 기준, victim_ru_cb: cost-benefit 점수 기준).
+ */
 typedef struct ru_mgmt {
     int mgmt_type; /* GC strategy: GC_GLOBAL_GREEDY, etc. */
 
@@ -306,12 +423,14 @@ typedef struct ru_mgmt {
     int full_ru_cnt;
     int custom_gc_threshold;
 
+    /* free RU ≤ gc_thres_rus: background GC, ≤ ..._high: 강제 GC */
     uint64_t gc_thres_rus;
     uint64_t gc_thres_rus_high;
     double gc_thres_pcent;
     double gc_thres_pcent_high;
 
     /* runtime WAF tracking */
+    /* 아래 5개는 femu_fdp_init_ru_mgmt()에서 초기화만 되고 쓰이지 않는다 */
     bool is_gc_triggered;
     bool is_force_gc_triggered;
     float waf_score_global;
@@ -319,6 +438,12 @@ typedef struct ru_mgmt {
     float utilization_overall;
 } ru_mgmt;
 
+/*
+ * RU(Reclaim Unit): FDP의 배치·회수 단위. 이 구현은 lines_per_ru=1이라
+ * RU 하나 = line 하나. ssd_wptr는 RU 전용 write pointer, lines[]는 소속
+ * line, ruh는 현재 배정된 RUH, nvme_ru는 host에 보이는 NVMe 측 RU 상태.
+ * pos/ruh_pos는 두 종류 victim pqueue의 heap 위치(겹치지 않게 따로 둠).
+ */
 struct FemuReclaimUnit {
     uint16_t ruidx;
     uint16_t rgidx;
@@ -344,6 +469,12 @@ struct FemuReclaimUnit {
     float my_cb;
 };
 
+/*
+ * RUH(Reclaim Unit Handle)의 FTL측 상태. rus[rg]: RG별 host write RU,
+ * curr_ru: 현재 host write RU(초기값 rus[0]), gc_ru: persistently isolated
+ * RUH의 GC 목적지 RU, ru_mgmt: persistently isolated RUH만 할당한다.
+ * hbmw/mbmw/mbe: FDP 통계(host/media bytes written, media bytes erased).
+ */
 struct FemuRuHandle {
     uint16_t ruh_type;
     uint16_t ruhid;
@@ -362,6 +493,7 @@ struct FemuRuHandle {
     uint64_t mbe;
 };
 
+/* RG(Reclaim Group): RU 배열 rus[tt_nru]와 그 RU들을 관리하는 ru_mgmt */
 struct FemuReclaimGroup {
     int rgidx;
     FemuReclaimUnit *rus;
@@ -375,6 +507,10 @@ struct FemuReclaimGroup {
  * verbatim. Selected by the gc_policy device property; the FDP RU GC path
  * (do_gc_fdp_style) is separate and unaffected.
  */
+/*
+ * 비FDP GC victim 선택 vtable. greedy/random/cost-benefit/fifo/d-choice
+ * (ftl-line-gc.c femu_ftl_policies[]) 중 ssd_init()에서 이름으로 고른다.
+ */
 struct femu_ftl_policy_ops {
     const char *name;
     struct line *(*select_victim_line)(struct ssd *ssd, bool force);
@@ -387,6 +523,7 @@ struct femu_ftl_policy_ops {
  * HOT when hot/cold separation is on; a log-block scheme puts its overwrites in
  * LOG so they land in blocks of their own rather than mixed in with data.
  */
+/* class별 write pointer: DATA→ssd->wp, LOG→ssd->log_wp, HOT→ssd->hot_wp */
 enum { FEMU_MAP_CLASS_DATA = 0, FEMU_MAP_CLASS_LOG = 1,
        FEMU_MAP_CLASS_HOT = 2 };
 
@@ -400,6 +537,12 @@ struct map_write_plan {
  * original full-DRAM mapping, bit-identical; "dftl" adds a demand-cached
  * translation table (the CMT cost model in ftl-map-cmt.c). Selected by the
  * mapping device property. The flat maptbl/rmap stay the source of truth.
+ */
+/*
+ * 등록된 scheme: "page"(기본), "dftl"(ftl-map.c), "hybrid"/"fast"
+ * (ftl-map-hybrid.c / ftl-map-fast.c, log-block 계열). 쓰기 흐름:
+ * prepare_write(배치 class 결정) → 새 PPA 할당 → commit_write(maptbl/rmap
+ * 갱신 + 이전 PPA invalid) → (필요 시) reclaim.
  */
 struct femu_mapping_ops {
     const char *name;
@@ -455,18 +598,35 @@ struct cmt_slot {
     bool dirty; /* dirty TP: eviction costs a write-back */
 };
 
+/*
+ * namespace 하나의 FTL 전체 상태. 각 모드(bb_init() 등)가 할당하고
+ * ssd_init()이 채운다.
+ *   물리 상태: ch[] 트리, lm(line 목록)
+ *   매핑:      maptbl[LPN] → PPA, rmap[page 번호] → LPN
+ *   쓰기 위치: wp(DATA, GC 이동도 여기로), hot_wp/log_wp, stream_wp[]
+ *   FDP 모드:  rg[], rus[][], ruhs[] (이때는 RU별 ssd_wptr로 쓴다)
+ *   정책:      mapping(L2P scheme), policy(GC victim 선택)
+ * 요청은 FTL thread 하나가 처리하므로 내부 자료구조에 잠금이 없다.
+ */
 struct ssd {
     char *ssdname;
     struct ssdparams sp;
     NandMedia media;    /* uniform NAND media-layer timing handle */
     struct ssd_channel *ch;
+    /* maptbl/rmap 크기는 둘 다 tt_pgs. 초기값 UNMAPPED_PPA / INVALID_LPN */
     struct ppa *maptbl; /* page level mapping table */
     uint64_t *rmap;     /* reverse mapptbl, assume it's stored in OOB */
+    /* wp: 비FDP DATA class 기본 write pointer(GC 이동도 보통 여기로) */
     struct write_pointer wp;
+    /*
+     * NVMe Streams: slot별 write pointer·tag.
+     * stream_gc_wp/stream_gc_tag는 이미 해제된 stream의 GC 이동용.
+     */
     struct write_pointer stream_wp[32];
     struct write_pointer stream_gc_wp;
     uint64_t stream_tags[32];
     uint64_t stream_gc_tag;
+    /* DRAM write buffer (buffer_size > 0일 때만 wb_tree 생성) */
     QTAILQ_HEAD(write_buffer, buffer_entry) write_buffer;   /* LRU order */
     GTree *wb_tree;                                         /* lpn lookup */
     int write_buffer_cnt;
@@ -475,12 +635,18 @@ struct ssd {
     struct line_mgmt lm;
 
     /* lockless ring for communication with NVMe IO thread */
+    /*
+     * 주의: 현재 ring과 FTL thread는 FemuCtrl의 n->to_ftl/n->to_poller/
+     * n->ftl_thread(femu.c)를 쓴다. 아래 to_ftl/to_poller/ftl_thread는
+     * bbssd 코드에서 쓰이지 않고, dataplane_started_ptr는 설정만 된다.
+     */
     struct rte_ring **to_ftl;
     struct rte_ring **to_poller;
     bool *dataplane_started_ptr;
     QemuThread ftl_thread;
 
     /* FDP: reclaim group/unit/handle management */
+    /* ftl-fdp.c femu_fdp_ssd_init_reclaim_group()/..._ru_handles()가 할당 */
     FemuReclaimGroup *rg;
     uint64_t nrg;
     FemuReclaimUnit **rus;
@@ -544,6 +710,11 @@ struct ssd {
      * host, and pages programmed to relocate data the device already held. WAF
      * is (host + relocated) / host.
      */
+    /*
+     * 위 영어 주석은 아래 host/nand/gc_write_pages(WAF) 설명이다.
+     * read_reclaim_line: read 경로가 고른 재기록 대상 line으로, 다음 쓰기 때
+     * do_read_reclaim()이 처리한다. WAF = (nand + gc) / host_write_pages.
+     */
     struct line *read_reclaim_line; /* line the read path asked to rewrite */
     bool reclaim_by_age;            /* that line was queued by age, not reads */
     uint64_t read_reclaims;         /* lines rewritten for read stress */
@@ -577,9 +748,20 @@ struct ssd {
     uint64_t err_write_counter;
     uint64_t err_write_injected;
 
+    /* 소유 controller. ssd_init()에서 설정 */
     FemuCtrl *n;
 };
 
+/*
+ * 외부(다른 모드·nvme 계층)에 공개하는 FTL API와 정의 위치:
+ *   bb_check_geometry/bb_gc_forced_lines/bb_fdp_forced_units → ftl-geom.c
+ *   bb_check_capacity/bb_init_fdp → bb.c,   ssd_init/ssd_free → ftl.c
+ *   ssd_free_write_buffer/ssd_buffer_destage/ssd_write_zeroes
+ *     → ftl-datapath.c,   ssd_release_stream → ftl-line-gc.c
+ *   ssd_deallocate_fdp_all → ftl-fdp.c,   femu_mapping_* → ftl-map.c,
+ *     femu_ftl_policy_known → ftl-line-gc.c
+ * bb_ftl_process_req()와 SMART용 ssd_*() 접근자는 nvme.h에 선언되어 있다.
+ */
 int bb_check_geometry(FemuCtrl *n, Error **errp);
 int bb_gc_forced_lines(FemuCtrl *n);
 uint64_t bb_fdp_forced_units(FemuCtrl *n, uint64_t units);
@@ -608,6 +790,7 @@ uint64_t ssd_advance_status(struct ssd *ssd, struct ppa *ppa,
 uint64_t ssd_advance_status_multiplane(struct ssd *ssd, struct ppa *ppas,
                                        int nppas, struct nand_cmd *ncmd);
 
+/* 로그 매크로: ftl_debug는 FEMU_DEBUG_FTL 빌드에서만, ftl_err/ftl_log는 항상 */
 #ifdef FEMU_DEBUG_FTL
 #define ftl_debug(fmt, ...) \
     do { printf("[FEMU] FTL-Dbg: " fmt, ## __VA_ARGS__); } while (0)

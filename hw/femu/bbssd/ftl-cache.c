@@ -6,11 +6,26 @@
  * a controller read cache. Runs on the single FTL thread. The eviction policy is
  * selectable: CLOCK (default), random, true LRU, or a scan-resistant 2Q variant.
  */
+/*
+ * [이 파일의 역할]
+ *   선택적 DRAM read cache (read_cache_mb > 0일 때만 동작). data는 담지
+ *   않고 "최근 읽은 LPN 집합"만 기억해서, hit이면 NAND read 대신 DRAM
+ *   지연을 돌려주는 timing 모델이다.
+ * [주요 진입 함수]
+ *   rcache_init(), rcache_touch(), rcache_invalidate(), rcache_destroy()
+ * [의존 관계]
+ *   부르는 쪽: ssd_init()·ssd_free() (ftl.c), ssd_read()·ssd_program_lpn()·
+ *             ssd_deallocate_lpns()·bbssd_power_loss() (ftl-datapath.c),
+ *             ssd_stream_write_lpns()·ssd_deallocate_fdp_lpns() (ftl-fdp.c)
+ *   부르는 것: 없음 (slot 배열 + open-address hash만 사용)
+ * 자세한 설명: 참고자료/code_study/12_datapath_read_write_trim.md
+ */
 #include "qemu/osdep.h"
 #include "ftl.h"
 #include "ftl-internal.h"
 
 /* Open-address hash over the rcache slot array: find the slot holding lpn, or -1. */
+/* 호출: rcache_touch(). 빈 bucket(-1)을 만나면 없는 것으로 판정 */
 static int32_t rcache_lookup(struct ssd *ssd, uint64_t lpn)
 {
     uint32_t h = (lpn * 2654435761u) % ssd->rcache.hash_sz;
@@ -29,6 +44,7 @@ static int32_t rcache_lookup(struct ssd *ssd, uint64_t lpn)
 }
 
 /* Rebuild the open-address hash from current slot contents (after an eviction). */
+/* 호출: rcache_touch() — eviction으로 slot의 LPN이 바뀐 뒤 hash 전체 재구성 */
 static void rcache_rehash(struct ssd *ssd)
 {
     for (uint32_t i = 0; i < ssd->rcache.hash_sz; i++) {
@@ -46,6 +62,14 @@ static void rcache_rehash(struct ssd *ssd)
     }
 }
 
+/*
+ * [eviction policy 4종] rcache_evict()가 evict_policy 값으로 고른다.
+ *   0 CLOCK  : hand가 돌며 ref=false인 slot 선택 (지나간 slot은 ref 해제)
+ *   1 random : 고정 seed LCG → 같은 workload면 같은 결과 (재현성)
+ *   2 LRU    : last_used가 가장 작은 slot (capacity 전체 스캔)
+ *   3 2Q     : ref=false(한 번만 접근) slot 중 LRU 우선, 없으면 전체 LRU
+ *   cache_evict 속성: "random"→1, "lru"→2, "arc"→3, 그 외/미지정→0 (ftl.c)
+ */
 /* Pick a victim slot by CLOCK (second chance) and return its index. */
 static uint32_t rcache_clock_evict(struct ssd *ssd)
 {
@@ -129,6 +153,7 @@ static uint32_t rcache_2q_evict(struct ssd *ssd)
 }
 
 /* Eviction-policy dispatch: 0 = CLOCK (default), 1 = random, 2 = LRU, 3 = 2Q. */
+/* 호출: rcache_touch() (cache가 가득 찼을 때 victim slot 선택) */
 static uint32_t rcache_evict(struct ssd *ssd)
 {
     if (ssd->rcache.evict_policy == 1) {
@@ -149,12 +174,21 @@ static uint32_t rcache_evict(struct ssd *ssd)
  * read). On a miss, insert the LPN (evicting via the selected policy if full) and
  * return 0 so the caller pays the NAND read. No-op (returns 0) when disabled.
  */
+/*
+ * read 1회에 대해 cache를 조회하고, miss면 그 LPN을 cache에 넣는다.
+ * 호출: ssd_read() (매핑된 LPN의 NAND read 직전)
+ * 흐름: ① hash 조회, hit면 ref/last_used 갱신 후 hit_lat 반환
+ *       → ② miss이고 빈 slot이 있으면 뒤에 추가 + hash 삽입
+ *       → ③ 가득 찼으면 policy로 victim을 골라 덮어쓰고 rcache_rehash()
+ * 반환: hit_lat(ns) 또는 0(miss/비활성). 0이 miss 신호라 hit_lat ≥ 1
+ */
 uint64_t rcache_touch(struct ssd *ssd, uint64_t lpn)
 {
     if (!ssd->rcache.capacity) {
         return 0;
     }
 
+    /* ① hash 조회. hit면 ref=true (2Q에서는 이것이 protected 승격) */
     int32_t slot = rcache_lookup(ssd, lpn);
     if (slot >= 0) {
         ssd->rcache.slots[slot].ref = true;
@@ -165,6 +199,7 @@ uint64_t rcache_touch(struct ssd *ssd, uint64_t lpn)
 
     ssd->rcache.misses++;
     uint32_t victim;
+    /* ② 아직 안 쓴 slot(used < capacity)이 있으면 그 자리에 추가 */
     if (ssd->rcache.used < ssd->rcache.capacity) {
         victim = ssd->rcache.used++;
         ssd->rcache.slots[victim].valid = true;
@@ -181,6 +216,7 @@ uint64_t rcache_touch(struct ssd *ssd, uint64_t lpn)
         }
         ssd->rcache.hash[h] = victim;
     } else {
+        /* ③ 가득 참: policy가 고른 slot을 새 LPN으로 덮어쓴다 */
         victim = rcache_evict(ssd);
         /*
          * The victim may be a slot that a prior rcache_invalidate() marked dead
@@ -191,6 +227,7 @@ uint64_t rcache_touch(struct ssd *ssd, uint64_t lpn)
         ssd->rcache.slots[victim].lpn = lpn;
         ssd->rcache.slots[victim].ref = (ssd->rcache.evict_policy != 3);
         ssd->rcache.slots[victim].last_used = ++ssd->rcache.tick;
+        /* rehash는 O(capacity): 에뮬레이터 CPU 비용일 뿐 모델 지연과 무관 */
         rcache_rehash(ssd); /* slot's key changed -> rebuild index */
     }
     return 0;
@@ -201,12 +238,20 @@ uint64_t rcache_touch(struct ssd *ssd, uint64_t lpn)
  * DRAM-hit after the page is overwritten or trimmed. No-op when disabled or when
  * the lpn is not cached.
  */
+/*
+ * LPN의 cache entry를 지운다 (overwrite/trim/power loss 뒤 stale hit 방지).
+ * 호출: ssd_program_lpn(), ssd_deallocate_lpns(), bbssd_power_loss()
+ *       (ftl-datapath.c), ssd_stream_write_lpns(), ssd_deallocate_fdp_lpns()
+ *       (ftl-fdp.c)
+ * 흐름: ① hash에서 slot을 찾아 valid=false → ② backward-shift로 hash 정리
+ */
 void rcache_invalidate(struct ssd *ssd, uint64_t lpn)
 {
     if (!ssd->rcache.capacity) {
         return;
     }
 
+    /* ① slot은 dead로만 표시, used는 줄이지 않고 eviction 때 재사용 */
     /* find the hash bucket holding this lpn */
     uint32_t hs = ssd->rcache.hash_sz;
     uint32_t i = (lpn * 2654435761u) % hs;
@@ -232,6 +277,7 @@ void rcache_invalidate(struct ssd *ssd, uint64_t lpn)
         return;
     }
 
+    /* ② 지운 bucket 뒤의 연속 구간을 재삽입해 probe chain을 유지 */
     /*
      * Backward-shift deletion: removing one open-addressed bucket means clearing
      * it and re-inserting the following contiguous run so no lookup chain breaks.
@@ -256,6 +302,12 @@ void rcache_invalidate(struct ssd *ssd, uint64_t lpn)
  * page. The sizing is held in 64 bits and bounded so capacity and hash_sz stay
  * within uint32_t even for an absurdly large request. hit_lat defaults to ~1/16
  * of a page read (a DRAM-ish hit) when pg_rd_lat is known.
+ */
+/*
+ * read cache를 할당한다 (read_cache_mb = 0이면 capacity = 0, 즉 꺼짐).
+ * 호출: ssd_init() (ftl.c) — cache_evict 문자열을 policy 번호로 바꿔 넘김
+ * capacity = read_cache_mb MiB / page 크기, hash_sz = capacity × 2 + 1
+ * hit_lat = pg_rd_lat / 16 (기본 40000ns → 2500ns), init 때 한 번 고정
  */
 void rcache_init(struct ssd *ssd, uint32_t read_cache_mb, uint32_t evict_policy)
 {
@@ -297,6 +349,7 @@ void rcache_init(struct ssd *ssd, uint32_t read_cache_mb, uint32_t evict_policy)
 }
 
 /* release what rcache_init() took */
+/* 호출: ssd_free() (ftl.c) */
 void rcache_destroy(struct ssd *ssd)
 {
     g_free(ssd->rcache.slots);
