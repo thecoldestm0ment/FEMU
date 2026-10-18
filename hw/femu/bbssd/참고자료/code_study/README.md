@@ -15,7 +15,7 @@ FEMU `hw/femu/bbssd/`(BlackBox SSD FTL)를 공부하며 정리한 노트다.
 
 ## FDP 공부 (파일시스템 placement 과제)
 
-[20_FDP_study_plan_fs.md](20_FDP_study_plan_fs.md)부터 시작한다. 0~6단계로 나눠 파라미터 → PH ↔ RUHID → 명령 → GC 정책 순서로 본다. 01~08은 각 단계의 "더 보기"로 쓴다.
+[20_FDP_study_plan_fs.md](20_FDP_study_plan_fs.md)부터 시작한다. 0~6단계로 나눠 파라미터 → PH ↔ RUHID → 명령 → GC 정책 순서로 본다. 01~08은 각 단계의 "더 보기"로 쓴다. 그림으로 공부할 계획은 [21_FDP_image_plan.md](21_FDP_image_plan.md).
 
 ## 예전 노트 (커밋 `e2d5413ff`, 단일 `ftl.c` 기준)
 

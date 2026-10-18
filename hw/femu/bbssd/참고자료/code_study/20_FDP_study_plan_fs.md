@@ -22,6 +22,8 @@ FDP 전체를 완벽히 이해하는 것이 목표가 아니다.
   [features/fdp.md](../../../docs/features/fdp.md)(사용법),
   [design/fdp.md](../../../docs/design/fdp.md)(설계).
 
+그림으로 공부할 때는 [21_FDP_image_plan.md](21_FDP_image_plan.md)의 단계별 그림 목록을 같이 쓴다.
+
 | 단계 | 주제 | 끝나면 할 수 있는 것 |
 |---|---|---|
 | 0 | 용어와 큰 그림 | PID 하나가 어디로 가는지 말로 설명 |
