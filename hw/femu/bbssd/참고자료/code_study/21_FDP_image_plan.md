@@ -119,14 +119,14 @@
 
 ### ★3-1 명령 지도
 - 그릴 것: 왼쪽 admin queue / I/O queue, 가운데 명령, 오른쪽 처리 함수.
-  poller에서 끝나는 것(회색)과 FTL thread까지 가는 것(노랑)을 색으로 구분.
+  admin 경로, poller, FTL thread 세 줄로 구분.
 
-| poller에서 끝남 | FTL thread까지 |
-|---|---|
-| Get Log Page 20h/21h/22h/23h, Get/Set Features 1Dh/1Eh, IO Mgmt Receive(RUH Status) | Write/Write Zeroes/Copy(DTYPE=2), IO Mgmt Send(RUH Update), DSM Deallocate |
+| admin 경로에서 끝남 | poller가 응답, 완료만 FTL 경유 | FTL thread가 실제 처리 |
+|---|---|---|
+| Get Log Page 20h/21h/22h/23h, Get/Set Features 1Dh/1Eh | IO Mgmt Receive(RUH Status) | Write/Write Zeroes/Copy(DTYPE=2), IO Mgmt Send(RUH Update), DSM Deallocate |
 
 - 근거: [20 3단계 표](20_FDP_study_plan_fs.md)
-- 확인: 왜 RUH Status는 FTL thread에 안 가도 되고 RUH Update는 가야 하나?
+- 확인: RUH Status는 FTL에서 할 일이 없는데 왜 FTL ring을 거치나? RUH Update는 왜 FTL이 직접 처리해야 하나?
 
 ### 3-2 RUH Update 순서
 - 그릴 것: ① PID → RUH → ② 지금 RU가 비어 있으면 그대로(event만) →

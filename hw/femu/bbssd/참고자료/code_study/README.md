@@ -18,8 +18,11 @@ FEMU `hw/femu/bbssd/`(BlackBox SSD FTL)를 공부하며 정리한 노트다.
 [20_FDP_study_plan_fs.md](20_FDP_study_plan_fs.md)부터 시작한다. 0~6단계로 나눠 파라미터 → PH ↔ RUHID → 명령 → GC 정책 순서로 본다. 01~08은 각 단계의 "더 보기"로 쓴다. 그림으로 공부할 계획은 [21_FDP_image_plan.md](21_FDP_image_plan.md).
 
 그림 + 대화식 쉬운 설명 (단계별):
-- [30 · 0단계 큰 그림](30_FDP_0단계_큰그림.md)
+- [30 · 0단계 큰 그림: RU, RUH, PH, PID](30_FDP_0단계_큰그림.md)
+- [31 · 1단계 파라미터: 옵션, RU 크기, RU 예산, 두 층의 RUH](31_FDP_1단계_파라미터.md)
 - [32 · 2단계 write 하나가 RU에 닿기까지](32_FDP_2단계_PID에서_RU까지.md)
+- [33 · 3단계 FDP 명령 지도와 RUH Update](33_FDP_3단계_명령.md)
+- [34 · 4단계 RU의 일생과 GC 시점](34_FDP_4단계_RU교체와_GC시점.md)
 
 ## 예전 노트 (커밋 `e2d5413ff`, 단일 `ftl.c` 기준)
 

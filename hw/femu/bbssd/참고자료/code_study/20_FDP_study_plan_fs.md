@@ -110,17 +110,18 @@ host  nvme write -T 2 -S <pid>      CDW12[23:20]=DTYPE, CDW13[31:16]=DSPEC
 
 | 명령 | 하는 일 | FEMU 처리 함수 | 처리 위치 |
 |---|---|---|---|
-| Identify Controller | CTRATT bit 19 = FDP 지원 | (`NVME_CTRATT_FDPS`) | poller |
-| Get Log Page 20h | FDP 설정(RUH 수, RU 크기) | [`nvme_fdp_confs()`](../../../nvme-admin.c#L2346) | poller |
-| Get Log Page 21h | RUH 사용 현황 | [`nvme_fdp_ruh_usage()`](../../../nvme-admin.c#L2415) | poller |
-| Get Log Page 22h | 통계 HBMW/MBMW/MBE | [`nvme_fdp_stats()`](../../../nvme-admin.c#L2461) | poller |
-| Get Log Page 23h | FDP event | [`nvme_fdp_events()`](../../../nvme-admin.c#L2493) | poller |
-| Get/Set Features 1Dh, 1Eh | FDP 모드 / event 필터 | [`nvme_get_feature_fdp()`](../../../nvme-admin.c#L1188), [`nvme_set_feature()`](../../../nvme-admin.c#L1501) | poller |
-| IO Mgmt Receive (12h) | RUH Status: PID 목록·RUAMW | [`nvme_io_mgmt_recv_ruhs()`](../../../nvme-io.c#L1771) | poller가 바로 응답 |
+| Identify Controller | CTRATT bit 19 = FDP 지원 | (`NVME_CTRATT_FDPS`) | admin 경로에서 바로 응답 |
+| Get Log Page 20h | FDP 설정(RUH 수, RU 크기) | [`nvme_fdp_confs()`](../../../nvme-admin.c#L2346) | admin 경로에서 바로 응답 |
+| Get Log Page 21h | RUH 사용 현황 | [`nvme_fdp_ruh_usage()`](../../../nvme-admin.c#L2415) | admin 경로에서 바로 응답 |
+| Get Log Page 22h | 통계 HBMW/MBMW/MBE | [`nvme_fdp_stats()`](../../../nvme-admin.c#L2461) | admin 경로에서 바로 응답 |
+| Get Log Page 23h | FDP event | [`nvme_fdp_events()`](../../../nvme-admin.c#L2493) | admin 경로에서 바로 응답 |
+| Get/Set Features 1Dh, 1Eh | FDP 모드 / event 필터 | [`nvme_get_feature_fdp()`](../../../nvme-admin.c#L1188), [`nvme_set_feature()`](../../../nvme-admin.c#L1501) | admin 경로에서 바로 응답 |
+| IO Mgmt Receive (12h) | RUH Status: PID 목록·RUAMW | [`nvme_io_mgmt_recv_ruhs()`](../../../nvme-io.c#L1771) | poller가 응답 작성, 완료만 FTL 경유 |
 | IO Mgmt Send (1Dh) | RUH Update: 새 RU로 교체 | [`nvme_io_mgmt_send_ruh_update()`](../../../nvme-io.c#L1849) → [`ssd_fdp_update_ruhs()`](../../ftl-fdp.c#L1605) | FTL thread까지 |
 | Write / Write Zeroes / Copy | DTYPE=2면 placement | `nvme_rw()` → `nvme_do_write_fdp()` | FTL thread |
 | DSM Deallocate | trim | `ssd_trim_fdp_style()` | FTL thread |
 
+- admin 명령은 host가 admin doorbell을 쓸 때 바로 처리된다(`nvme_process_sq_admin()`). I/O 명령은 실패한 것까지 전부 FTL ring을 거쳐 완료된다.
 - poller와 FTL thread의 역할은 [11 §6](11_core_structures_and_dispatch.md)과
   [design/fdp.md](../../../docs/design/fdp.md) "Threads, locks and where latency is charged"
 - 해보기: `nvme fdp configs / usage / stats / events / status`를 하나씩 실행하고
