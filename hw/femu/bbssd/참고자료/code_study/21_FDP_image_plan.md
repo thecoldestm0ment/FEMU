@@ -172,8 +172,9 @@
 
 ### ★5-2 PI vs II 격리
 - 그릴 것: 좌우 두 칸.
-  왼쪽 PI: RUH1 victim의 valid page → RUH1의 `gc_ru`(host가 쓰는 `curr_ru`와 별도). 색이 안 섞임.
-  오른쪽 II: victim의 valid page → 마지막 RUH(RUH3)의 `curr_ru`. 다른 색과 섞임.
+  왼쪽 PI(`isolation_mode=0`, 기본): RUH1 victim의 valid page → RUH1의 `gc_ru`(host가 쓰는 `curr_ru`와 별도). 안 섞임.
+  오른쪽 II(`isolation_mode=1`이면 마지막 RUH3만 II): RUH3 victim의 valid page → RUH3의 `curr_ru`.
+  FEMU에서 II는 하나뿐이라 다른 handle이 아니라 **같은 handle의 새 host 데이터와** 섞인다.
 - 근거: [`fdp_gc_frontier()`](../../ftl-fdp.c#L601), [design/fdp.md](../../../docs/design/fdp.md) "Where relocated data goes"
 - 확인: 파일시스템 hotness 분리에는 PI와 II 중 어느 쪽이 맞나?
 
@@ -186,12 +187,12 @@
 
 ### ★6-1 전체 스택
 ```text
- 파일시스템   파일 hotness → class (hot / warm / cold)          ← 우리가 수정
- block layer  class → write stream 번호                        ← 우리가 수정
- NVMe 드라이버 RUH Status로 PID 목록 → stream → PID, DTYPE=2     ← 우리가 수정
+ 파일시스템    F2FS 온도(hot / warm / cold) → bio의 write stream 번호      ← 우리가 수정
+ block layer   bio->bi_write_stream, max_write_streams (Linux 6.16+)
+ NVMe 드라이버 RUH Status로 PID 목록(plids[]) → stream N → DSPEC=plids[N-1], DTYPE=2
  ─────────────────────────────── NVMe ───────────────────────────────
- FEMU         PID → PH → RUHID → RU (2-2)  →  GC(5-1, 5-2)
- 측정         nvme fdp status / stats, WAF(log C0h)
+ FEMU          PID → PH → RUHID → RU (2-2)  →  GC(5-1, 5-2)
+ 측정          nvme fdp status / stats, WAF = MBMW / HBMW
 ```
 - 그릴 것: 위 스케치를 세로 스택으로. 수정할 계층은 강조, 각 층 옆에 "이 층이 알아야 할 정보".
 - 근거: [20 6단계](20_FDP_study_plan_fs.md)

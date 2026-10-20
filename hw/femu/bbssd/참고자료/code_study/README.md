@@ -23,6 +23,8 @@ FEMU `hw/femu/bbssd/`(BlackBox SSD FTL)를 공부하며 정리한 노트다.
 - [32 · 2단계 write 하나가 RU에 닿기까지](32_FDP_2단계_PID에서_RU까지.md)
 - [33 · 3단계 FDP 명령 지도와 RUH Update](33_FDP_3단계_명령.md)
 - [34 · 4단계 RU의 일생과 GC 시점](34_FDP_4단계_RU교체와_GC시점.md)
+- [35 · 5단계 GC 정책: victim 선택, PI/II 격리, GC 순서](35_FDP_5단계_GC정책.md)
+- [36 · 6단계 파일시스템에서 RU까지 전체 연결](36_FDP_6단계_파일시스템_연결.md)
 
 ## 예전 노트 (커밋 `e2d5413ff`, 단일 `ftl.c` 기준)
 

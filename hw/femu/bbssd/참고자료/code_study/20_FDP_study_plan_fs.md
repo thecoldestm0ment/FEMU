@@ -158,7 +158,7 @@ free ──(RUH가 RU 필요)──▶ active(curr_ru) ──(가득 참 / RUH U
 | 격리 | victim의 valid page가 가는 곳 |
 |---|---|
 | PI | 같은 RUH의 GC 전용 RU(`gc_ru`) → GC 후에도 다른 handle과 섞이지 않음 |
-| II | 마지막 RUH의 현재 RU → GC 후 섞일 수 있음 |
+| II | 마지막 RUH의 현재 RU → 같은 handle의 새 host 데이터와 섞임 (FEMU는 `isolation_mode=1`일 때 마지막 RUH만 II) |
 
 - 코드: [`select_victim_ru()`](../../ftl-fdp.c#L678) → [`do_gc_fdp_style()`](../../ftl-fdp.c#L1162) →
   [`fdp_gc_frontier()`](../../ftl-fdp.c#L601) / [`gc_write_page_fdp_style()`](../../ftl-fdp.c#L893)
@@ -171,15 +171,15 @@ free ──(RUH가 RU 필요)──▶ active(curr_ru) ──(가득 참 / RUH U
 
 ## 6단계 — 파일시스템과 연결 (정리)
 
-| 계층 | 할 일 | FEMU에서 확인 |
+| 계층 | 할 일 | 확인 |
 |---|---|---|
-| 파일시스템 | 파일/데이터 hotness → class | — |
-| block layer | class → write stream 번호 | — |
-| NVMe 드라이버 | RUH Status로 PID 목록 획득 → stream 번호를 PID로 → write에 DTYPE=2, DSPEC=PID | `nvme fdp status`, `FEMU_FDP_DEBUG` |
+| 파일시스템 | 데이터 온도/파일 정보 → bio의 write stream 번호 (**우리가 수정**) | — |
+| block layer | `bio->bi_write_stream` 전달, `max_write_streams`(= PID 개수) 제공 | `/sys/block/nvme0n1/queue/max_write_streams` |
+| NVMe 드라이버 | RUH Status로 PID 목록 `plids[]` 확보 → stream N이면 DSPEC=`plids[N-1]`, DTYPE=2 | `nvme fdp status` |
 | FEMU | PID → PH → RUHID → RU (2단계) | RUAMW 감소, MBMW/HBMW, WAF |
 
-- 일반 block device write에는 placement 정보가 없다. 게스트 커널이 넣어 줘야 한다.
-  Linux 최근 버전(6.16 무렵)에 block layer write stream과 NVMe FDP 연결이 들어갔으니,
-  쓸 게스트 커널 버전에서 확인해 볼 것.
-- fio의 `io_uring_cmd` + `fdp=1` 구현이 host 쪽 PID 처리의 참고 예시다.
+- Linux 6.16(2025-07)에 block layer write stream과 NVMe FDP 연결이 들어갔다.
+  stream 0이면 배치 정보 없음(FEMU에서 RUH 0), stream이 PID 개수보다 크면 쓰기 실패(`BLK_STS_INVAL`).
+- fio의 `io_uring_cmd` + `fdp=1` 구현도 host 쪽 PID 처리의 참고 예시다.
+- 자세한 설명: [36 · 6단계](36_FDP_6단계_파일시스템_연결.md)
 - 체크: class 수가 `fdp.nruh`보다 많으면 어떻게 할까? II/PI 선택은 어느 계층이 알아야 할까?
